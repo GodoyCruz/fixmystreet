@@ -3,6 +3,8 @@ package FixMyStreet::App::Controller::Report;
 use Moose;
 use namespace::autoclean;
 use JSON::MaybeXS;
+use List::MoreUtils qw(any);
+use Utils;
 
 BEGIN { extends 'Catalyst::Controller'; }
 
@@ -76,6 +78,13 @@ sub _display : Private {
     $c->forward( 'load_problem_or_display_error', [ $id ] );
     $c->forward( 'load_updates' );
     $c->forward( 'format_problem_for_display' );
+
+    my $permissions = $c->stash->{_permissions} = $c->forward( 'check_has_permission_to',
+        [ qw/report_inspect report_edit_category report_edit_priority/ ] );
+    if (any { $_ } values %$permissions) {
+        $c->stash->{template} = 'report/inspect.html';
+        $c->forward('inspect');
+    }
 }
 
 sub support : Path('support') : Args(0) {
@@ -131,7 +140,7 @@ sub load_problem_or_display_error : Private {
     }
 
     $c->stash->{problem} = $problem;
-    if ( $c->user_exists && $c->user->has_permission_to(moderate => $problem->bodies_str) ) {
+    if ( $c->user_exists && $c->user->has_permission_to(moderate => $problem->bodies_str_ids) ) {
         $c->stash->{problem_original} = $problem->find_or_new_related(
             moderation_original_data => {
                 title => $problem->title,
@@ -222,13 +231,8 @@ sub generate_map_tags : Private {
         latitude  => $problem->latitude,
         longitude => $problem->longitude,
         pins      => $problem->used_map
-        ? [ {
-            latitude  => $problem->latitude,
-            longitude => $problem->longitude,
-            colour    => $c->cobrand->pin_colour($problem, 'report'),
-            type      => 'big',
-          } ]
-        : [],
+            ? [ $problem->pin_data($c, 'report', type => 'big') ]
+            : [],
     );
 
     return 1;
@@ -268,6 +272,8 @@ sub delete :Local :Args(1) {
     $p->lastupdate( \'current_timestamp' );
     $p->update;
 
+    $p->user->update_reputation(-1);
+
     $c->model('DB::AdminLog')->create( {
         admin_user => $c->user->email,
         object_type => 'problem',
@@ -278,16 +284,218 @@ sub delete :Local :Args(1) {
     return $c->res->redirect($uri);
 }
 
-sub map : Path('') : Args(2) {
-    my ( $self, $c, $id, $map ) = @_;
+=head2 action_router
 
-    $c->detach( '/page_error_404_not_found', [] ) unless $map eq 'map';
+A router for dispatching handlers for sub-actions on a particular report,
+e.g. /report/1/inspect
+
+=cut
+
+sub action_router : Path('') : Args(2) {
+    my ( $self, $c, $id, $action ) = @_;
+
+    $c->go( 'map', [ $id ] ) if $action eq 'map';
+    $c->go( 'nearby_json', [ $id ] ) if $action eq 'nearby.json';
+
+    $c->detach( '/page_error_404_not_found', [] );
+}
+
+sub inspect : Private {
+    my ( $self, $c ) = @_;
+    my $problem = $c->stash->{problem};
+    my $permissions = $c->stash->{_permissions};
+
+    $c->stash->{categories} = $c->forward('/admin/categories_for_point');
+    $c->stash->{report_meta} = { map { $_->{name} => $_ } @{ $c->stash->{problem}->get_extra_fields() } };
+
+    my %category_body = map { $_->category => $_->body_id } map { $_->contacts->all } values %{$problem->bodies};
+
+    my @priorities = $c->model('DB::ResponsePriority')->for_bodies($problem->bodies_str_ids)->all;
+    my $priorities_by_category = {};
+    foreach my $pri (@priorities) {
+        my $any = 0;
+        foreach ($pri->contacts->all) {
+            $any = 1;
+            push @{$priorities_by_category->{$_->category}}, $pri->id . '=' . URI::Escape::uri_escape_utf8($pri->name);
+        }
+        if (!$any) {
+            foreach (grep { $category_body{$_} == $pri->body_id } @{$c->stash->{categories}}) {
+                push @{$priorities_by_category->{$_}}, $pri->id . '=' . URI::Escape::uri_escape_utf8($pri->name);
+            }
+        }
+    }
+    foreach (keys %{$priorities_by_category}) {
+        $priorities_by_category->{$_} = join('&', @{$priorities_by_category->{$_}});
+    }
+
+    $c->stash->{priorities_by_category} = $priorities_by_category;
+
+    if ( $c->get_param('save') ) {
+        $c->forward('/auth/check_csrf_token');
+
+        my $valid = 1;
+        my $update_text;
+        my $reputation_change = 0;
+        my %update_params = ();
+
+        if ($permissions->{report_inspect}) {
+            foreach (qw/detailed_information traffic_information duplicate_of/) {
+                $problem->set_extra_metadata( $_ => $c->get_param($_) );
+            }
+
+            if ( $c->get_param('save_inspected') ) {
+                $update_text = Utils::cleanup_text( $c->get_param('public_update'), { allow_multiline => 1 } );
+                if ($update_text) {
+                    $problem->set_extra_metadata( inspected => 1 );
+                    $reputation_change = 1;
+                } else {
+                    $valid = 0;
+                    $c->stash->{errors} ||= [];
+                    push @{ $c->stash->{errors} }, _('Please provide a public update for this report.');
+                }
+            }
+
+            # Handle the state changing
+            my $old_state = $problem->state;
+            $problem->state($c->get_param('state'));
+            if ( $problem->is_visible() and $old_state eq 'unconfirmed' ) {
+                $problem->confirmed( \'current_timestamp' );
+            }
+            if ( $problem->state eq 'hidden' ) {
+                $problem->get_photoset->delete_cached;
+            }
+            if ( $problem->state eq 'duplicate' && $old_state ne 'duplicate' ) {
+                # If the report is being closed as duplicate, make sure the
+                # update records this.
+                $update_params{problem_state} = "duplicate";
+            }
+            if ( $problem->state ne 'duplicate' ) {
+                $problem->unset_extra_metadata('duplicate_of');
+            }
+            if ( $problem->state ne $old_state ) {
+                $c->forward( '/admin/log_edit', [ $problem->id, 'problem', 'state_change' ] );
+            }
+        }
+
+        if ( !$c->forward( '/admin/report_edit_location', [ $problem ] ) ) {
+            # New lat/lon isn't valid, show an error
+            $valid = 0;
+            $c->stash->{errors} ||= [];
+            push @{ $c->stash->{errors} }, _('Invalid location. New location must be covered by the same council.');
+        }
+
+        if ($permissions->{report_inspect} || $permissions->{report_edit_category}) {
+            $c->forward( '/admin/report_edit_category', [ $problem ] );
+
+            # The new category might require extra metadata (e.g. pothole size), so
+            # we need to update the problem with the new values.
+            my $param_prefix = lc $problem->category;
+            $param_prefix =~ s/[^a-z]//g;
+            $param_prefix = "category_" . $param_prefix . "_";
+            my @contacts = grep { $_->category eq $problem->category } @{$c->stash->{contacts}};
+            $c->forward('/report/new/set_report_extras', [ \@contacts, $param_prefix ]);
+        }
+
+        # Updating priority must come after category, in case category has changed (and so might have priorities)
+        if ($c->get_param('priority') && ($permissions->{report_inspect} || $permissions->{report_edit_priority})) {
+            $problem->response_priority( $problem->response_priorities->find({ id => $c->get_param('priority') }) );
+        }
+
+        if ($valid) {
+            if ( $reputation_change != 0 ) {
+                $problem->user->update_reputation($reputation_change);
+            }
+            $problem->lastupdate( \'current_timestamp' );
+            $problem->update;
+            if ( defined($update_text) ) {
+                my $timestamp = \'current_timestamp';
+                if (my $saved_at = $c->get_param('saved_at')) {
+                    $timestamp = DateTime->from_epoch( epoch => $saved_at );
+                }
+                $problem->add_to_comments( {
+                    text => $update_text,
+                    created => $timestamp,
+                    confirmed => $timestamp,
+                    user_id => $c->user->id,
+                    name => $c->user->from_body->name,
+                    state => 'confirmed',
+                    mark_fixed => 0,
+                    anonymous => 0,
+                    %update_params,
+                } );
+            }
+            # This problem might no longer be visible on the current cobrand,
+            # if its body has changed (e.g. by virtue of the category changing)
+            # so redirect to a cobrand where it can be seen if necessary
+            my $redirect_uri;
+            if ( $c->cobrand->is_council && !$c->cobrand->owns_problem($problem) ) {
+                $redirect_uri = $c->cobrand->base_url_for_report( $problem ) . $problem->url;
+            } else {
+                $redirect_uri = $c->uri_for( $problem->url );
+            }
+            $c->log->debug( "Redirecting to: " . $redirect_uri );
+            $c->res->redirect( $redirect_uri );
+        }
+    }
+};
+
+sub map : Private {
+    my ( $self, $c, $id ) = @_;
+
     $c->forward( 'load_problem_or_display_error', [ $id ] );
 
     my $image = $c->stash->{problem}->static_map;
     $c->res->content_type($image->{content_type});
     $c->res->body($image->{data});
 }
+
+
+sub nearby_json : Private {
+    my ( $self, $c, $id ) = @_;
+
+    $c->forward( 'load_problem_or_display_error', [ $id ] );
+    my $p = $c->stash->{problem};
+    my $dist = 1000;
+
+    my $nearby = $c->model('DB::Nearby')->nearby(
+        $c, $dist, [ $p->id ], 5, $p->latitude, $p->longitude, undef, [ $p->category ], undef
+    );
+    my @pins = map {
+        my $p = $_->problem;
+        my $colour = $c->cobrand->pin_colour( $p, 'around' );
+        [ $p->latitude, $p->longitude,
+          $colour,
+          $p->id, $p->title_safe, 'small', JSON->false
+        ]
+    } @$nearby;
+
+    my $on_map_list_html = $c->render_fragment(
+        'around/on_map_list_items.html',
+        { on_map => [], around_map => $nearby }
+    );
+
+    my $json = { pins => \@pins };
+    $json->{current} = $on_map_list_html if $on_map_list_html;
+    my $body = encode_json($json);
+    $c->res->content_type('application/json; charset=utf-8');
+    $c->res->body($body);
+}
+
+
+=head2 check_has_permission_to
+
+Ensure the currently logged-in user has any of the provided permissions applied
+to the current Problem in $c->stash->{problem}. Shows the 403 page if not.
+
+=cut
+
+sub check_has_permission_to : Private {
+    my ( $self, $c, @permissions ) = @_;
+    return {} unless $c->user_exists;
+    my $bodies = $c->stash->{problem}->bodies_str_ids;
+    my %permissions = map { $_ => $c->user->has_permission_to($_, $bodies) } @permissions;
+    return \%permissions;
+};
 
 __PACKAGE__->meta->make_immutable;
 

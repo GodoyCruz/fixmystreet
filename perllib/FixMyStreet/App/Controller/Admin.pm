@@ -8,9 +8,9 @@ use Path::Class;
 use POSIX qw(strftime strcoll);
 use Digest::SHA qw(sha1_hex);
 use mySociety::EmailUtil qw(is_valid_email);
+use mySociety::ArrayUtils;
 use DateTime::Format::Strptime;
 use List::Util 'first';
-
 
 use FixMyStreet::SendReport;
 
@@ -33,8 +33,11 @@ sub begin : Private {
 
     # User must be logged in to see cobrand, and meet whatever checks the
     # cobrand specifies. Default cobrand just requires superuser flag to be set.
-    unless ( $c->user_exists && $c->cobrand->admin_allow_user($c->user) ) {
+    unless ( $c->user_exists ) {
         $c->detach( '/auth/redirect' );
+    }
+    unless ( $c->cobrand->admin_allow_user($c->user) ) {
+        $c->detach('/page_error_403_access_denied', []);
     }
 
     if ( $c->cobrand->moniker eq 'zurich' ) {
@@ -126,7 +129,7 @@ sub index : Path : Args(0) {
 
 sub config_page : Path( 'config' ) : Args(0) {
     my ($self, $c) = @_;
-    my $dir = $c->stash->{additional_template_paths}->[0];
+    my $dir = FixMyStreet->path_to();
     my $git_version = `cd $dir && git describe --tags`;
     chomp $git_version;
     $c->stash(
@@ -219,8 +222,11 @@ sub bodies : Path('bodies') : Args(0) {
     my ( $self, $c ) = @_;
 
     if (my $body_id = $c->get_param('body')) {
-        $c->res->redirect( $c->uri_for( 'body', $body_id ) );
-        return;
+        return $c->res->redirect( $c->uri_for( 'body', $body_id ) );
+    }
+
+    if (!$c->user->is_superuser && $c->user->from_body && $c->cobrand->moniker ne 'zurich') {
+        return $c->res->redirect( $c->uri_for( 'body', $c->user->from_body->id ) );
     }
 
     $c->forward( '/auth/get_csrf_token' );
@@ -298,7 +304,10 @@ sub body : Path('body') : Args(1) {
 
     $c->stash->{body_id} = $body_id;
 
-    $c->forward( 'check_for_super_user' );
+    unless ($c->user->has_permission_to('category_edit', $body_id)) {
+        $c->forward('check_for_super_user');
+    }
+
     $c->forward( '/auth/get_csrf_token' );
     $c->forward( 'lookup_body' );
     $c->forward( 'fetch_all_bodies' );
@@ -309,7 +318,7 @@ sub body : Path('body') : Args(1) {
         $c->forward('update_contacts');
     }
 
-    $c->forward('display_contacts');
+    $c->forward('fetch_contacts');
 
     return 1;
 }
@@ -339,8 +348,6 @@ sub update_contacts : Private {
 
         my $category = $self->trim( $c->get_param('category') );
         $errors{category} = _("Please choose a category") unless $category;
-        my $email = $self->trim( $c->get_param('email') );
-        $errors{email} = _('Please enter a valid email') unless is_valid_email($email) || $email eq 'REFUSED';
         $errors{note} = _('Please enter a message') unless $c->get_param('note');
 
         my $contact = $c->model('DB::Contact')->find_or_new(
@@ -349,6 +356,12 @@ sub update_contacts : Private {
                 category => $category,
             }
         );
+
+        my $email = $self->trim( $c->get_param('email') );
+        my $send_method = $c->get_param('send_method') || $contact->send_method || $contact->body->send_method || "";
+        unless ( $send_method eq 'Open311' ) {
+            $errors{email} = _('Please enter a valid email') unless is_valid_email($email) || $email eq 'REFUSED';
+        }
 
         $contact->email( $email );
         $contact->confirmed( $c->get_param('confirmed') ? 1 : 0 );
@@ -362,12 +375,21 @@ sub update_contacts : Private {
         $contact->api_key( $c->get_param('api_key') );
         $contact->send_method( $c->get_param('send_method') );
 
-        # Set the photo_required flag in extra to the appropriate value
+        # Set flags in extra to the appropriate values
         if ( $c->get_param('photo_required') ) {
             $contact->set_extra_metadata_if_undefined(  photo_required => 1 );
         }
         else {
             $contact->unset_extra_metadata( 'photo_required' );
+        }
+        if ( $c->get_param('inspection_required') ) {
+            $contact->set_extra_metadata( inspection_required => 1 );
+        }
+        else {
+            $contact->unset_extra_metadata( 'inspection_required' );
+        }
+        if ( $c->get_param('reputation_threshold') ) {
+            $contact->set_extra_metadata( reputation_threshold => int($c->get_param('reputation_threshold')) );
         }
 
         if ( %errors ) {
@@ -411,7 +433,7 @@ sub update_contacts : Private {
         $c->forward('/auth/check_csrf_token');
 
         my $params = $c->forward( 'body_params' );
-        unless ( keys $c->stash->{body_errors} ) {
+        unless ( keys %{$c->stash->{body_errors}} ) {
             $c->stash->{body}->update( $params );
             my @current = $c->stash->{body}->body_areas->all;
             my %current = map { $_->area_id => 1 } @current;
@@ -457,14 +479,15 @@ sub check_body_params : Private {
     }
 }
 
-sub display_contacts : Private {
+sub fetch_contacts : Private {
     my ( $self, $c ) = @_;
 
     my $contacts = $c->stash->{body}->contacts->search(undef, { order_by => [ 'category' ] } );
     $c->stash->{contacts} = $contacts;
     $c->stash->{live_contacts} = $contacts->search({ deleted => 0 });
+    $c->stash->{any_not_confirmed} = $contacts->search({ confirmed => 0 })->count;
 
-    if ( $c->get_param('text') && $c->get_param('text') == 1 ) {
+    if ( $c->get_param('text') && $c->get_param('text') eq '1' ) {
         $c->stash->{template} = 'admin/council_contacts.txt';
         $c->res->content_type('text/plain; charset=utf-8');
         return 1;
@@ -478,7 +501,7 @@ sub lookup_body : Private {
 
     my $body_id = $c->stash->{body_id};
     my $body = $c->model('DB::Body')->find($body_id);
-    $c->detach( '/page_error_404_not_found' )
+    $c->detach( '/page_error_404_not_found', [] )
       unless $body;
     $c->stash->{body} = $body;
     
@@ -666,8 +689,15 @@ sub report_edit : Path('report_edit') : Args(1) {
 
     my $problem = $c->cobrand->problems->search( { id => $id } )->first;
 
-    $c->detach( '/page_error_404_not_found' )
+    $c->detach( '/page_error_404_not_found', [] )
       unless $problem;
+
+    unless (
+        $c->cobrand->moniker eq 'zurich'
+        || $c->user->has_permission_to(report_edit => $problem->bodies_str_ids)
+    ) {
+        $c->detach( '/page_error_403_access_denied', [] );
+    }
 
     $c->stash->{problem} = $problem;
 
@@ -757,12 +787,7 @@ sub report_edit : Path('report_edit') : Args(1) {
         }
         $problem->set_inflated_columns(\%columns);
 
-        if ((my $category = $c->get_param('category')) ne $problem->category) {
-            $problem->category($category);
-            my @contacts = grep { $_->category eq $problem->category } @{$c->stash->{contacts}};
-            my $bs = join( ',', map { $_->body_id } @contacts );
-            $problem->bodies_str($bs);
-        }
+        $c->forward( '/admin/report_edit_category', [ $problem ] );
 
         if ( $c->get_param('email') ne $problem->user->email ) {
             my $user = $c->model('DB::User')->find_or_create(
@@ -806,6 +831,70 @@ sub report_edit : Path('report_edit') : Args(1) {
     return 1;
 }
 
+=head2 report_edit_category
+
+Handles changing a problem's category and the complexity that comes with it.
+
+=cut
+
+sub report_edit_category : Private {
+    my ($self, $c, $problem) = @_;
+
+    if ((my $category = $c->get_param('category')) ne $problem->category) {
+        my $category_old = $problem->category;
+        $problem->category($category);
+        my @contacts = grep { $_->category eq $problem->category } @{$c->stash->{contacts}};
+        my @new_body_ids = map { $_->body_id } @contacts;
+        # If the report has changed bodies we need to resend it
+        if (scalar @{mySociety::ArrayUtils::symmetric_diff($problem->bodies_str_ids, \@new_body_ids)}) {
+            $problem->whensent(undef);
+        }
+        $problem->bodies_str(join( ',', @new_body_ids ));
+        $problem->add_to_comments({
+            text => '*' . sprintf(_('Category changed from ‘%s’ to ‘%s’'), $category_old, $category) . '*',
+            created => \'current_timestamp',
+            confirmed => \'current_timestamp',
+            user_id => $c->user->id,
+            name => $c->user->from_body ? $c->user->from_body->name : $c->user->name,
+            state => 'confirmed',
+            mark_fixed => 0,
+            anonymous => 0,
+        });
+    }
+}
+
+=head2 report_edit_location
+
+Handles changing a problem's location and the complexity that comes with it.
+For now, we reject the new location if the new location and old locations aren't
+covered by the same body.
+
+Returns 1 if the new position (if any) is acceptable, undef otherwise.
+
+NB: This must be called before report_edit_category, as that might modify
+$problem->bodies_str.
+
+=cut
+
+sub report_edit_location : Private {
+    my ($self, $c, $problem) = @_;
+
+    return 1 unless $c->forward('/location/determine_location_from_coords');
+
+    my ($lat, $lon) = map { Utils::truncate_coordinate($_) } $problem->latitude, $problem->longitude;
+    if ( $c->stash->{latitude} != $lat || $c->stash->{longitude} != $lon ) {
+        $c->forward('/council/load_and_check_areas', []);
+        $c->forward('/report/new/setup_categories_and_bodies');
+        my %allowed_bodies = map { $_ => 1 } @{$problem->bodies_str_ids};
+        my @new_bodies = @{$c->stash->{bodies_to_list}};
+        my $bodies_match = grep { exists( $allowed_bodies{$_} ) } @new_bodies;
+        return unless $bodies_match;
+        $problem->latitude($c->stash->{latitude});
+        $problem->longitude($c->stash->{longitude});
+    }
+    return 1;
+}
+
 sub categories_for_point : Private {
     my ($self, $c) = @_;
 
@@ -813,8 +902,8 @@ sub categories_for_point : Private {
     # We have a report, stash its location
     $c->forward('/report/new/determine_location_from_report');
     # Look up the areas for this location
-    $c->stash->{prefetched_all_areas} = [ grep { $_ } split ',', $c->stash->{report}->areas ];
-    $c->forward('/around/check_location_is_acceptable');
+    my $prefetched_all_areas = [ grep { $_ } split ',', $c->stash->{report}->areas ];
+    $c->forward('/around/check_location_is_acceptable', [ $prefetched_all_areas ]);
     # As with a new report, fetch the bodies/categories
     $c->forward('/report/new/setup_categories_and_bodies');
 
@@ -827,71 +916,25 @@ sub categories_for_point : Private {
 sub templates : Path('templates') : Args(0) {
     my ( $self, $c ) = @_;
 
-    $c->detach( '/page_error_404_not_found' )
-        unless $c->cobrand->moniker eq 'zurich';
-
     my $user = $c->user;
 
-    $self->templates_for_body($c, $user->from_body );
+    if ($user->is_superuser) {
+        $c->forward('fetch_all_bodies');
+        $c->stash->{template} = 'admin/templates_index.html';
+    } elsif ( $user->from_body ) {
+        $c->forward('load_template_body', [ $user->from_body->id ]);
+        $c->res->redirect( $c->uri_for( 'templates', $c->stash->{body}->id ) );
+    } else {
+        $c->detach( '/page_error_404_not_found', [] );
+    }
 }
 
 sub templates_view : Path('templates') : Args(1) {
     my ($self, $c, $body_id) = @_;
 
-    $c->detach( '/page_error_404_not_found' )
-        unless $c->cobrand->moniker eq 'zurich';
+    $c->forward('load_template_body', [ $body_id ]);
 
-    # e.g. for admin
-
-    my $body = $c->model('DB::Body')->find($body_id)
-        or $c->detach( '/page_error_404_not_found' );
-
-    $self->templates_for_body($c, $body);
-}
-
-sub template_edit : Path('templates') : Args(2) {
-    my ( $self, $c, $body_id, $template_id ) = @_;
-
-    $c->detach( '/page_error_404_not_found' )
-        unless $c->cobrand->moniker eq 'zurich';
-
-    my $body = $c->model('DB::Body')->find($body_id)
-        or $c->detach( '/page_error_404_not_found' );
-    $c->stash->{body} = $body;
-
-    my $template;
-    if ($template_id eq 'new') {
-        $template = $body->response_templates->new({});
-    }
-    else {
-        $template = $body->response_templates->find( $template_id )
-            or $c->detach( '/page_error_404_not_found' );
-    }
-
-    if ($c->req->method eq 'POST') {
-        if ($c->get_param('delete_template') eq _("Delete template")) {
-            $template->delete;
-        } else {
-            $template->title( $c->get_param('title') );
-            $template->text ( $c->get_param('text') );
-            $template->update_or_insert;
-        }
-
-        $c->res->redirect( $c->uri_for( 'templates', $body->id ) );
-    }
-
-    $c->stash->{response_template} = $template;
-
-    $c->stash->{template} = 'admin/template_edit.html';
-}
-
-
-sub templates_for_body {
-    my ( $self, $c, $body ) = @_;
-
-    $c->stash->{body} = $body;
-
-    my @templates = $body->response_templates->search(
+    my @templates = $c->stash->{body}->response_templates->search(
         undef,
         {
             order_by => 'title'
@@ -901,6 +944,81 @@ sub templates_for_body {
     $c->stash->{response_templates} = \@templates;
 
     $c->stash->{template} = 'admin/templates.html';
+}
+
+sub template_edit : Path('templates') : Args(2) {
+    my ( $self, $c, $body_id, $template_id ) = @_;
+
+    $c->forward('load_template_body', [ $body_id ]);
+
+    my $template;
+    if ($template_id eq 'new') {
+        $template = $c->stash->{body}->response_templates->new({});
+    }
+    else {
+        $template = $c->stash->{body}->response_templates->find( $template_id )
+            or $c->detach( '/page_error_404_not_found', [] );
+    }
+
+    $c->forward('fetch_contacts');
+    my @contacts = $template->contacts->all;
+    my @live_contacts = $c->stash->{live_contacts}->all;
+    my %active_contacts = map { $_->id => 1 } @contacts;
+    my @all_contacts = map { {
+        id => $_->id,
+        category => $_->category,
+        active => $active_contacts{$_->id},
+    } } @live_contacts;
+    $c->stash->{contacts} = \@all_contacts;
+
+    if ($c->req->method eq 'POST') {
+        if ($c->get_param('delete_template') && $c->get_param('delete_template') eq _("Delete template")) {
+            $template->contact_response_templates->delete_all;
+            $template->delete;
+        } else {
+            $template->title( $c->get_param('title') );
+            $template->text( $c->get_param('text') );
+            $template->auto_response( $c->get_param('auto_response') ? 1 : 0 );
+            $template->update_or_insert;
+
+            my @live_contact_ids = map { $_->id } @live_contacts;
+            my @new_contact_ids = grep { $c->get_param("contacts[$_]") } @live_contact_ids;
+            $template->contact_response_templates->search({
+                contact_id => { '!=' => \@new_contact_ids },
+            })->delete;
+            foreach my $contact_id (@new_contact_ids) {
+                $template->contact_response_templates->find_or_create({
+                    contact_id => $contact_id,
+                });
+            }
+        }
+
+        $c->res->redirect( $c->uri_for( 'templates', $c->stash->{body}->id ) );
+    }
+
+    $c->stash->{response_template} = $template;
+
+    $c->stash->{template} = 'admin/template_edit.html';
+}
+
+sub load_template_body : Private {
+    my ($self, $c, $body_id) = @_;
+
+    my $zurich_user = $c->user->from_body && $c->cobrand->moniker eq 'zurich';
+    my $has_permission = $c->user->has_body_permission_to('template_edit') &&
+                         $c->user->from_body->id eq $body_id;
+
+    unless ( $c->user->is_superuser || $zurich_user || $has_permission ) {
+        $c->detach( '/page_error_404_not_found', [] );
+    }
+
+    # Regular users can only view their own body's templates
+    if ( !$c->user->is_superuser && $body_id ne $c->user->from_body->id ) {
+        $c->res->redirect( $c->uri_for( 'templates', $c->user->from_body->id ) );
+    }
+
+    $c->stash->{body} = $c->model('DB::Body')->find($body_id)
+        or $c->detach( '/page_error_404_not_found', [] );
 }
 
 sub users: Path('users') : Args(0) {
@@ -913,7 +1031,7 @@ sub users: Path('users') : Args(0) {
         my $search_n = 0;
         $search_n = int($search) if $search =~ /^\d+$/;
 
-        my $users = $c->model('DB::User')->search(
+        my $users = $c->cobrand->users->search(
             {
                 -or => [
                     email => { ilike => $isearch },
@@ -926,17 +1044,17 @@ sub users: Path('users') : Args(0) {
         my %email2user = map { $_->email => $_ } @users;
         $c->stash->{users} = [ @users ];
 
-        my $emails = $c->model('DB::Abuse')->search(
-            {
-                email => { ilike => $isearch }
-            }
-        );
-        foreach my $email ($emails->all) {
-            # Slight abuse of the boolean flagged value
-            if ($email2user{$email->email}) {
-                $email2user{$email->email}->flagged( 2 );
-            } else {
-                push @{$c->stash->{users}}, { email => $email->email, flagged => 2 };
+        if ( $c->user->is_superuser ) {
+            my $emails = $c->model('DB::Abuse')->search(
+                { email => { ilike => $isearch } }
+            );
+            foreach my $email ($emails->all) {
+                # Slight abuse of the boolean flagged value
+                if ($email2user{$email->email}) {
+                    $email2user{$email->email}->flagged( 2 );
+                } else {
+                    push @{$c->stash->{users}}, { email => $email->email, flagged => 2 };
+                }
             }
         }
 
@@ -945,7 +1063,7 @@ sub users: Path('users') : Args(0) {
         $c->forward('fetch_all_bodies');
 
         # Admin users by default
-        my $users = $c->model('DB::User')->search(
+        my $users = $c->cobrand->users->search(
             { from_body => { '!=', undef } },
             { order_by => 'name' }
         );
@@ -963,7 +1081,7 @@ sub update_edit : Path('update_edit') : Args(1) {
 
     my $update = $c->cobrand->updates->search({ id => $id })->first;
 
-    $c->detach( '/page_error_404_not_found' )
+    $c->detach( '/page_error_404_not_found', [] )
       unless $update;
 
     $c->forward('/auth/get_csrf_token');
@@ -1078,14 +1196,14 @@ sub user_add : Path('user_edit') : Args(0) {
 
     $c->forward('/auth/check_csrf_token');
 
+    $c->stash->{field_errors} = {};
     unless ($c->get_param('email')) {
         $c->stash->{field_errors}->{email} = _('Please enter a valid email');
-        return;
     }
     unless ($c->get_param('name')) {
         $c->stash->{field_errors}->{name} = _('Please enter a name');
-        return;
     }
+    return if %{$c->stash->{field_errors}};
 
     my $user = $c->model('DB::User')->find_or_create( {
         name => $c->get_param('name'),
@@ -1113,10 +1231,21 @@ sub user_edit : Path('user_edit') : Args(1) {
 
     $c->forward('/auth/get_csrf_token');
 
-    my $user = $c->model('DB::User')->find( { id => $id } );
+    my $user = $c->cobrand->users->find( { id => $id } );
+    $c->detach( '/page_error_404_not_found', [] ) unless $user;
+
+    unless ( $c->user->is_superuser || $c->user->has_body_permission_to('user_edit') || $c->cobrand->moniker eq 'zurich' ) {
+        $c->detach('/page_error_403_access_denied', []);
+    }
+
     $c->stash->{user} = $user;
 
+    if ( $user->from_body && $c->user->has_permission_to('user_manage_permissions', $user->from_body->id) ) {
+        $c->stash->{available_permissions} = $c->cobrand->available_permissions;
+    }
+
     $c->forward('fetch_all_bodies');
+    $c->forward('fetch_body_areas', [ $user->from_body ]) if $user->from_body;
 
     if ( $c->get_param('submit') ) {
         $c->forward('/auth/check_csrf_token');
@@ -1126,7 +1255,7 @@ sub user_edit : Path('user_edit') : Args(1) {
         if ( $user->email ne $c->get_param('email') ||
             $user->name ne $c->get_param('name') ||
             ($user->phone || "") ne $c->get_param('phone') ||
-            ($user->from_body && $user->from_body->id ne $c->get_param('body')) ||
+            ($user->from_body && $c->get_param('body') && $user->from_body->id ne $c->get_param('body')) ||
             (!$user->from_body && $c->get_param('body'))
         ) {
                 $edited = 1;
@@ -1135,19 +1264,101 @@ sub user_edit : Path('user_edit') : Args(1) {
         $user->name( $c->get_param('name') );
         $user->email( $c->get_param('email') );
         $user->phone( $c->get_param('phone') ) if $c->get_param('phone');
-        $user->from_body( $c->get_param('body') || undef );
         $user->flagged( $c->get_param('flagged') || 0 );
         # Only superusers can grant superuser status
         $user->is_superuser( ( $c->user->is_superuser && $c->get_param('is_superuser') ) || 0 );
+        # Superusers can set from_body to any value, but other staff can only
+        # set from_body to the same value as their own from_body.
+        if ( $c->user->is_superuser || $c->cobrand->moniker eq 'zurich' ) {
+            $user->from_body( $c->get_param('body') || undef );
+        } elsif ( $c->user->has_body_permission_to('user_assign_body') &&
+                  $c->get_param('body') && $c->get_param('body') eq $c->user->from_body->id ) {
+            $user->from_body( $c->user->from_body );
+        } else {
+            $user->from_body( undef );
+        }
+
+        # Has the user's from_body changed since we fetched areas (if we ever did)?
+        # If so, we need to re-fetch areas so the UI is up to date.
+        if ( $user->from_body && $user->from_body->id ne $c->stash->{fetched_areas_body_id} ) {
+            $c->forward('fetch_body_areas', [ $user->from_body ]);
+        }
+
+        if (!$user->from_body) {
+            # Non-staff users aren't allowed any permissions or to be in an area
+            $user->admin_user_body_permissions->delete;
+            $user->area_id(undef);
+            delete $c->stash->{areas};
+            delete $c->stash->{fetched_areas_body_id};
+        } elsif ($c->stash->{available_permissions}) {
+            my @all_permissions = map { keys %$_ } values %{ $c->stash->{available_permissions} };
+            my @user_permissions = grep { $c->get_param("permissions[$_]") ? 1 : undef } @all_permissions;
+            $user->admin_user_body_permissions->search({
+                body_id => $user->from_body->id,
+                permission_type => { '!=' => \@user_permissions },
+            })->delete;
+            foreach my $permission_type (@user_permissions) {
+                $user->user_body_permissions->find_or_create({
+                    body_id => $user->from_body->id,
+                    permission_type => $permission_type,
+                });
+            }
+        }
+
+        if ( $user->from_body && $c->user->has_permission_to('user_assign_areas', $user->from_body->id) ) {
+            my %valid_areas = map { $_->{id} => 1 } @{ $c->stash->{areas} };
+            my $new_area = $c->get_param('area_id');
+            $user->area_id( $valid_areas{$new_area} ? $new_area : undef );
+        }
+
+        # Handle 'trusted' flag(s)
+        my @trusted_bodies = $c->get_param_list('trusted_bodies');
+        if ( $c->user->is_superuser ) {
+            $user->user_body_permissions->search({
+                body_id => { '!=' => \@trusted_bodies },
+                permission_type => 'trusted',
+            })->delete;
+            foreach my $body_id (@trusted_bodies) {
+                $user->user_body_permissions->find_or_create({
+                    body_id => $body_id,
+                    permission_type => 'trusted',
+                });
+            }
+        } elsif ( $c->user->from_body ) {
+            my %trusted = map { $_ => 1 } @trusted_bodies;
+            my $body_id = $c->user->from_body->id;
+            if ( $trusted{$body_id} ) {
+                $user->user_body_permissions->find_or_create({
+                    body_id => $body_id,
+                    permission_type => 'trusted',
+                });
+            } else {
+                $user->user_body_permissions->search({
+                    body_id => $body_id,
+                    permission_type => 'trusted',
+                })->delete;
+            }
+        }
+
+        $c->stash->{field_errors} = {};
+
+        # Update the categories this user operates in
+        if ( $user->from_body ) {
+            $c->stash->{body} = $user->from_body;
+            $c->forward('fetch_contacts');
+            my @live_contacts = $c->stash->{live_contacts}->all;
+            my @live_contact_ids = map { $_->id } @live_contacts;
+            my @new_contact_ids = grep { $c->get_param("contacts[$_]") } @live_contact_ids;
+            $user->set_extra_metadata('categories', \@new_contact_ids);
+        }
 
         unless ($user->email) {
             $c->stash->{field_errors}->{email} = _('Please enter a valid email');
-            return;
         }
         unless ($user->name) {
             $c->stash->{field_errors}->{name} = _('Please enter a name');
-            return;
         }
+        return if %{$c->stash->{field_errors}};
 
         my $existing_user = $c->model('DB::User')->search({ email => $user->email, id => { '!=', $user->id } })->first;
         if ($existing_user) {
@@ -1165,6 +1376,22 @@ sub user_edit : Path('user_edit') : Args(1) {
           '<p><em>' . _('Updated!') . '</em></p>';
     }
 
+    if ( $user->from_body ) {
+        unless ( $c->stash->{live_contacts} ) {
+            $c->stash->{body} = $user->from_body;
+            $c->forward('fetch_contacts');
+        }
+        my @contacts = @{$user->get_extra_metadata('categories') || []};
+        my %active_contacts = map { $_ => 1 } @contacts;
+        my @live_contacts = $c->stash->{live_contacts}->all;
+        my @all_contacts = map { {
+            id => $_->id,
+            category => $_->category,
+            active => $active_contacts{$_->id},
+        } } @live_contacts;
+        $c->stash->{contacts} = \@all_contacts;
+    }
+
     return 1;
 }
 
@@ -1177,12 +1404,13 @@ sub flagged : Path('flagged') : Args(0) {
     # which has to use an array ref for sql quoting reasons
     $c->stash->{problems} = [ $problems->all ];
 
-    my $users = $c->model('DB::User')->search( { flagged => 1 } );
+    my $users = $c->cobrand->users->search( { flagged => 1 } );
     my @users = $users->all;
     my %email2user = map { $_->email => $_ } @users;
     $c->stash->{users} = [ @users ];
 
-    my @abuser_emails = $c->model('DB::Abuse')->all();
+    my @abuser_emails = $c->model('DB::Abuse')->all()
+        if $c->user->is_superuser;
 
     foreach my $email (@abuser_emails) {
         # Slight abuse of the boolean flagged value
@@ -1229,7 +1457,13 @@ sub stats_fix_rate : Path('stats/fix-rate') : Args(0) {
 sub stats : Path('stats') : Args(0) {
     my ( $self, $c ) = @_;
 
-    $c->forward('fetch_all_bodies');
+    my $selected_body;
+    if ( $c->user->is_superuser ) {
+        $c->forward('fetch_all_bodies');
+        $selected_body = $c->get_param('body');
+    } else {
+        $selected_body = $c->user->from_body->id;
+    }
 
     if ( $c->cobrand->moniker eq 'seesomething' || $c->cobrand->moniker eq 'zurich' ) {
         return $c->cobrand->admin_stats();
@@ -1259,7 +1493,7 @@ sub stats : Path('stats') : Args(0) {
         my $bymonth = $c->get_param('bymonth');
         $c->stash->{bymonth} = $bymonth;
 
-        $c->stash->{selected_body} = $c->get_param('body');
+        $c->stash->{selected_body} = $selected_body;
 
         my $field = 'confirmed';
 
@@ -1288,7 +1522,7 @@ sub stats : Path('stats') : Args(0) {
             );
         }
 
-        my $p = $c->cobrand->problems->to_body($c->get_param('body'))->search(
+        my $p = $c->cobrand->problems->to_body($selected_body)->search(
             {
                 -AND => [
                     $field => { '>=', $start_date},
@@ -1317,24 +1551,6 @@ sub set_allowed_pages : Private {
     my ( $self, $c ) = @_;
 
     my $pages = $c->cobrand->admin_pages;
-
-    if( !$pages ) {
-        $pages = {
-             'summary' => [_('Summary'), 0],
-             'bodies' => [_('Bodies'), 1],
-             'reports' => [_('Reports'), 2],
-             'timeline' => [_('Timeline'), 3],
-             'users' => [_('Users'), 5],
-             'flagged'  => [_('Flagged'), 6],
-             'stats'  => [_('Stats'), 7],
-             'config' => [ _('Configuration'), 8],
-             'user_edit' => [undef, undef], 
-             'body' => [undef, undef],
-             'report_edit' => [undef, undef],
-             'update_edit' => [undef, undef],
-             'abuse_edit'  => [undef, undef],
-        }
-    }
 
     my @allowed_links = sort {$pages->{$a}[1] <=> $pages->{$b}[1]}  grep {$pages->{$_}->[0] } keys %$pages;
 
@@ -1427,7 +1643,7 @@ sub flag_user : Private {
 
     return unless $email;
 
-    my $user = $c->model('DB::User')->find({ email => $email });
+    my $user = $c->cobrand->users->find({ email => $email });
 
     if ( !$user ) {
         $c->stash->{status_message} = _('Could not find user');
@@ -1455,7 +1671,7 @@ sub remove_user_flag : Private {
 
     return unless $email;
 
-    my $user = $c->model('DB::User')->find({ email => $email });
+    my $user = $c->cobrand->users->find({ email => $email });
 
     if ( !$user ) {
         $c->stash->{status_message} = _('Could not find user');
@@ -1562,7 +1778,7 @@ sub check_page_allowed : Private {
     $page ||= 'summary';
 
     if ( !grep { $_ eq $page } keys %{ $c->stash->{allowed_pages} } ) {
-        $c->detach( '/page_error_404_not_found' );
+        $c->detach( '/page_error_404_not_found', [] );
     }
 
     return 1;
@@ -1580,6 +1796,27 @@ sub fetch_all_bodies : Private {
     $c->stash->{bodies} = \@bodies;
 
     return 1;
+}
+
+sub fetch_body_areas : Private {
+    my ($self, $c, $body ) = @_;
+
+    my $body_area = $body->body_areas->first;
+
+    unless ( $body_area ) {
+        # Body doesn't have any areas defined.
+        delete $c->stash->{areas};
+        delete $c->stash->{fetched_areas_body_id};
+        return;
+    }
+
+    my $areas = mySociety::MaPit::call('area/children', [ $body_area->area_id ],
+        type => $c->cobrand->area_types_children,
+    );
+
+    $c->stash->{areas} = [ sort { strcoll($a->{name}, $b->{name}) } values %$areas ];
+    # Keep track of the areas we've fetched to prevent a duplicate fetch later on
+    $c->stash->{fetched_areas_body_id} = $body->id;
 }
 
 sub trim {

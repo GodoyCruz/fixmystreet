@@ -2,7 +2,10 @@
 <!--[if IE 7]>   <html class="no-js ie7 iel8" lang="[% lang_code %]"><![endif]-->
 <!--[if IE 8]>   <html class="no-js ie8 iel8" lang="[% lang_code %]"><![endif]-->
 <!--[if IE 9]>   <html class="no-js ie9" lang="[% lang_code %]"><![endif]-->
-<!--[if gt IE 9]><!--><html class="no-js" lang="[% lang_code %]"><!--<![endif]-->
+<!--[if gt IE 9]><!--><html class="no-js" lang="[% lang_code %]"
+[% IF appcache ~%]
+ manifest="/offline/appcache.manifest"
+[%~ END %]><!--<![endif]-->
     <head>
         <meta name="viewport" content="initial-scale=1.0">
 
@@ -17,13 +20,9 @@
             <link rel="stylesheet" href="[% version('/cobrands/' _ c.cobrand.moniker _ '/layout.css') %]">
         <![endif]-->
 
-        <script src="[% version('/js/modernizr.custom.js') %]" charset="utf-8"></script>
         [% INCLUDE 'common_header_tags.html' %]
-        [% extra_js %]
 
         [% INCLUDE 'tracking_code.html' %]
-        [% PROCESS 'header_extra.html' %]
-
     </head>
     <body class="[% bodyclass | html IF bodyclass %]">
 <div id="oxford-wrapper">
@@ -46,8 +45,14 @@
                             <[% IF c.req.uri.path == '/my' OR ( c.req.uri.path == '/auth' AND c.req.params.r == 'my' ) %]span[% ELSE %]a href="/my"[% END
                              %]>[% c.user_exists ? loc("Your account") : loc("Sign in") %]</[% ( c.req.uri.path == '/my' OR ( c.req.uri.path == '/auth' AND c.req.params.r == 'my' ) ) ? 'span' : 'a' %]>
                         </li>
+                        [% IF c.user_exists AND c.user.has_body_permission_to('planned_reports') %]
                         <li>
-                            <[% IF c.req.uri.path == '/reports/Oxfordshire' %]span[% ELSE %]a href="/reports/Oxfordshire"[% END
+                            <[% IF c.req.uri.path == '/my/planned' %]span[% ELSE %]a href="/my/planned"[% END
+                             %]>[% loc('Shortlist') %]</[% c.req.uri.path == '/my/planned' ? 'span' : 'a' %]>
+                        </li>
+                        [% END %]
+                        <li>
+                            <[% IF c.req.uri.path == '/reports/Oxfordshire' %]span[% ELSE %]a href="/reports/Oxfordshire[% IF c.user_exists AND c.user.categories.size %]?filter_category=[% c.user.categories.join(",") | uri | html %][% END %]"[% END
                                  %]>[% loc("All reports") %]</[% c.req.uri.path == '/reports' ? 'span' : 'a' %]>
                         </li>
                         <li>

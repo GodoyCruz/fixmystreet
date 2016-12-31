@@ -140,6 +140,30 @@ sub problems_on_map_restriction {
     return $rs;
 }
 
+=head1 users
+
+Returns a ResultSet of Users, potentially restricted to a subset if we're on
+a cobrand that only wants some of the data.
+
+=cut
+
+sub users {
+    my $self = shift;
+    return $self->users_restriction($self->{c}->model('DB::User'));
+}
+
+=head1 users_restriction
+
+Used to restricts users in the admin in a cobrand in a particular way. Do
+nothing by default.
+
+=cut
+
+sub users_restriction {
+    my ($self, $rs) = @_;
+    return $rs;
+}
+
 sub site_key { return 0; }
 
 =head2 restriction
@@ -358,22 +382,14 @@ sub cobrand_data_for_generic_problem { '' }
 Given a URL ($_[1]), QUERY, EXTRA_DATA, return a URL with any extra params
 needed appended to it.
 
-In the default case, if we're using an OpenLayers map, we need to make
-sure zoom is always present if lat/lon are, to stop OpenLayers defaulting
-to null/0.
+In the default case, we need to make sure zoom is always present if lat/lon
+are, to stop OpenLayers defaulting to null/0.
 
 =cut
 
 sub uri {
     my ( $self, $uri ) = @_;
-
-    {
-        no warnings 'once';
-        my $map_class = $FixMyStreet::Map::map_class;
-        return $uri unless $map_class && $map_class =~ /FixMyStreet::Map::(OSM|FMS)/;
-    }
-
-    $uri->query_param( zoom => 3 )
+    $uri->query_param( zoom => $self->default_link_zoom )
       if $uri->query_param('lat') && !$uri->query_param('zoom');
 
     return $uri;
@@ -416,7 +432,7 @@ The order_by clause to use for reports on all reports page
 =cut
 
 sub reports_ordering {
-    return { -desc => 'lastupdate' };
+    return 'updated-desc';
 }
 
 =head2 on_map_list_limit
@@ -613,7 +629,50 @@ List of names of pages to display on the admin interface
 
 =cut
 
-sub admin_pages { 0 }
+sub admin_pages {
+    my $self = shift;
+
+    my $user = $self->{c}->user;
+
+    my $pages = {
+         'summary' => [_('Summary'), 0],
+         'timeline' => [_('Timeline'), 5],
+         'stats'  => [_('Stats'), 8],
+    };
+
+    # There are some pages that only super users can see
+    if ( $user->is_superuser ) {
+        $pages->{flagged} = [ _('Flagged'), 7 ];
+        $pages->{config} = [ _('Configuration'), 9];
+    };
+    # And some that need special permissions
+    if ( $user->is_superuser || $user->has_body_permission_to('category_edit') ) {
+        my $page_title = $user->is_superuser ? _('Bodies') : _('Categories');
+        $pages->{bodies} = [ $page_title, 1 ];
+        $pages->{body} = [ undef, undef ];
+    }
+    if ( $user->is_superuser || $user->has_body_permission_to('report_edit') ) {
+        $pages->{reports} = [ _('Reports'), 2 ];
+        $pages->{report_edit} = [ undef, undef ];
+        $pages->{update_edit} = [ undef, undef ];
+        $pages->{abuse_edit} = [ undef, undef ];
+    }
+    if ( $user->is_superuser || $user->has_body_permission_to('template_edit') ) {
+        $pages->{templates} = [ _('Templates'), 3 ];
+        $pages->{template_edit} = [ undef, undef ];
+    };
+    if ( $user->is_superuser || $user->has_body_permission_to('responsepriority_edit') ) {
+        $pages->{responsepriorities} = [ _('Priorities'), 4 ];
+        $pages->{responsepriority_edit} = [ undef, undef ];
+    };
+
+    if ( $user->is_superuser || $user->has_body_permission_to('user_edit') ) {
+        $pages->{users} = [ _('Users'), 6 ];
+        $pages->{user_edit} = [ undef, undef ];
+    }
+
+    return $pages;
+}
 
 =head2 admin_show_creation_graph
 
@@ -633,6 +692,48 @@ sub admin_allow_user {
     my ( $self, $user ) = @_;
     return 1 if $user->is_superuser;
 }
+
+=head2 available_permissions
+
+Grouped lists of permission types available for use in the admin
+
+=cut
+
+sub available_permissions {
+    my $self = shift;
+
+    return {
+        _("Problems") => {
+            moderate => _("Moderate report details"),
+            report_edit => _("Edit reports"),
+            report_edit_category => _("Edit report category"), # future use
+            report_edit_priority => _("Edit report priority"), # future use
+            report_inspect => _("Markup problem details"),
+            report_instruct => _("Instruct contractors to fix problems"), # future use
+            planned_reports => _("Manage shortlist"),
+            contribute_as_another_user => _("Create reports/updates on a user's behalf"),
+            contribute_as_body => _("Create reports/updates as the council"),
+
+            # NB this permission is special in that it can be assigned to users
+            # without their from_body being set. It's included here for
+            # reference, but left commented out because it's not assigned in the
+            # same way as other permissions.
+            # trusted => _("Trusted to make reports that don't need to be inspected"),
+        },
+        _("Users") => {
+            user_edit => _("Edit other users' details"),
+            user_manage_permissions => _("Edit other users' permissions"),
+            user_assign_body => _("Grant access to the admin"),
+            user_assign_areas => _("Assign users to areas"), # future use
+        },
+        _("Bodies") => {
+            category_edit => _("Add/edit problem categories"),
+            template_edit => _("Add/edit response templates"),
+            responsepriority_edit => _("Add/edit response priorities"),
+        },
+    };
+}
+
 
 =head2 area_types
 
@@ -770,25 +871,25 @@ sub get_report_stats { return 0; }
 sub get_body_sender {
     my ( $self, $body, $category ) = @_;
 
+    # look up via category
+    my $contact = $body->contacts->search( { category => $category } )->first;
     if ( $body->can_be_devolved ) {
-        # look up via category
-        my $config = $body->result_source->schema->resultset("Contact")->search( { body_id => $body->id, category => $category } )->first;
-        if ( $config->send_method ) {
-            return { method => $config->send_method, config => $config };
+        if ( $contact->send_method ) {
+            return { method => $contact->send_method, config => $contact, contact => $contact };
         } else {
-            return { method => $body->send_method, config => $body };
+            return { method => $body->send_method, config => $body, contact => $contact };
         }
     } elsif ( $body->send_method ) {
-        return { method => $body->send_method, config => $body };
+        return { method => $body->send_method, config => $body, contact => $contact };
     }
 
-    return $self->_fallback_body_sender( $body, $category );
+    return $self->_fallback_body_sender( $body, $category, $contact );
 }
 
 sub _fallback_body_sender {
-    my ( $self, $body, $category ) = @_;
+    my ( $self, $body, $category, $contact ) = @_;
 
-    return { method => 'Email' };
+    return { method => 'Email', contact => $contact };
 };
 
 sub example_places {
@@ -873,7 +974,18 @@ sub tweak_all_reports_map {}
 
 sub can_support_problems { return 0; }
 
+=head2 default_map_zoom / default_link_zoom
+
+default_map_zoom is used when displaying a map overriding the
+default of max-4 or max-3 depending on population density.
+
+default_link_zoom is used in links that contain a 'lat' and no
+zoom, to stop e.g. OpenLayers defaulting to null/0.
+
+=cut
+
 sub default_map_zoom { undef };
+sub default_link_zoom { 3 }
 
 sub users_can_hide { return 0; }
 
@@ -1052,6 +1164,27 @@ See Zurich for an example.
 
 sub contact_details_data {
     return ()
+}
+
+=head2 lookup_by_ref_regex
+
+Returns a regex to match postcode form input against to determine if a lookup
+by id should be done.
+
+=cut
+
+sub lookup_by_ref_regex {
+    return qr/^\s*ref:\s*(\d+)\s*$/;
+}
+
+=head2 category_extra_hidden
+
+Return true if an Open311 service attribute should be a hidden field.
+=cut
+
+sub category_extra_hidden {
+    my ($self, $meta) = @_;
+	return 0;
 }
 
 1;

@@ -157,6 +157,7 @@ sub delete_user {
     for my $p ( $user->problems ) {
         $p->comments->delete;
         $p->questionnaires->delete;
+        $p->user_planned_reports->delete;
         $p->delete;
     }
     for my $a ( $user->alerts ) {
@@ -165,6 +166,7 @@ sub delete_user {
     }
     $_->delete for $user->comments;
     $_->delete for $user->admin_logs;
+    $_->delete for $user->user_body_permissions;
     $user->delete;
 
     return 1;
@@ -280,6 +282,16 @@ sub get_first_email {
     return $email_as_string;
 }
 
+=head2 contains_or_lacks
+
+Based upon boolean FLAG, checks that content contains or lacks TEXT.
+
+=cut
+
+sub contains_or_lacks {
+    my ($mech, $flag, $text) = @_;
+    $flag ? $mech->content_contains($text) : $mech->content_lacks($text);
+}
 
 =head2 page_errors
 
@@ -598,10 +610,21 @@ sub delete_body {
     my $body = shift;
 
     $mech->delete_problems_for_body($body->id);
-    $body->contacts->delete;
+    $mech->delete_contact($_) for $body->contacts;
     $mech->delete_user($_) for $body->users;
+    $_->delete for $body->response_templates;
+    $_->delete for $body->response_priorities;
     $body->body_areas->delete;
     $body->delete;
+}
+
+sub delete_contact {
+    my $mech = shift;
+    my $contact = shift;
+
+    $contact->contact_response_templates->delete_all;
+    $contact->contact_response_priorities->delete_all;
+    $contact->delete;
 }
 
 sub delete_problems_for_body {

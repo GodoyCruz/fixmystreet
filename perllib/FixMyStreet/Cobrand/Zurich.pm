@@ -83,14 +83,7 @@ sub example_places {
 sub languages { [ 'de-ch,Deutsch,de_CH' ] }
 sub language_override { 'de-ch' }
 
-# If lat/lon are in the URI, we must have zoom as well, otherwise OpenLayers defaults to 0.
-sub uri {
-    my ( $self, $uri ) = @_;
-
-    $uri->query_param( zoom => 6 )
-      if $uri->query_param('lat') && !$uri->query_param('zoom');
-    return $uri;
-}
+sub default_link_zoom { 6 }
 
 sub prettify_dt {
     my $self = shift;
@@ -215,8 +208,8 @@ sub updates_as_hashref {
         $hashref->{update_pp} = $self->prettify_dt( $problem->lastupdate );
 
         if ( $problem->state eq 'fixed - council' ) {
-            $hashref->{details} = FixMyStreet::App::View::Web->add_links(
-                $ctx, $problem->get_extra_metadata('public_response') || '' );
+            $hashref->{details} = FixMyStreet::App::View::Web::add_links(
+                $problem->get_extra_metadata('public_response') || '' );
         } elsif ( $problem->state eq 'closed' ) {
             $hashref->{details} = sprintf( _('Assigned to %s'), $problem->body($ctx)->name );
         }

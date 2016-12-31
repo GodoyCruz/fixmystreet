@@ -191,6 +191,13 @@ sub prepare_params_for_email : Private {
         $c->stash->{problem}->update;
     }
 
+    my @extra = grep { /^extra\./ } keys %{$c->req->params};
+    foreach (@extra) {
+        my $param = $c->get_param($_);
+        my ($field_name) = /extra\.(.*)/;
+        $c->stash->{message} = "\u$field_name: $param\n\n" . $c->stash->{message};
+    }
+
     return 1;
 }
 
@@ -228,6 +235,10 @@ sub send_email : Private {
 
     my $recipient      = $c->cobrand->contact_email;
     my $recipient_name = $c->cobrand->contact_name();
+
+    if (my $localpart = $c->get_param('recipient')) {
+        $recipient = join('@', $localpart, FixMyStreet->config('EMAIL_DOMAIN'));
+    }
 
     $c->stash->{host} = $c->req->header('HOST');
     $c->stash->{ip}   = $c->req->address;

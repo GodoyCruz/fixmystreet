@@ -30,18 +30,9 @@ sub disambiguate_location {
 }
 
 sub area_types {
+    my $self = shift;
+    return $self->next::method() if FixMyStreet->config('STAGING_SITE') && FixMyStreet->config('SKIP_CHECKS_ON_STAGING');
     [ 'KOM' ];
-}
-
-# If lat/lon are present in the URL, OpenLayers will use that to centre the map.
-# Need to specify a zoom to stop it defaulting to null/0.
-sub uri {
-    my ( $self, $uri ) = @_;
-
-    $uri->query_param( zoom => 3 )
-      if $uri->query_param('lat') && !$uri->query_param('zoom');
-
-    return $uri;
 }
 
 sub geocode_postcode {

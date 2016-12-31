@@ -1,14 +1,12 @@
-[%# Assume using OpenStreetMap maps %]
-<script>
-yepnope.addPrefix( 'preload', function ( resource ) {
-    resource.noexec = true;
-    return resource;
-});
-Modernizr.load({
-    load: [
-        "preload![% version('/js/OpenLayers/OpenLayers.fixmystreet.js') %]",
-        "preload![% version('/js/map-OpenLayers.js') %]",
-        "preload![% version('/js/map-OpenStreetMap.js') %]",
-    ]
-});
-</script>
+[%
+# Assume using OpenStreetMap maps
+map_js = [
+    version('/js/yepnope.js'),
+    [ version('/cobrands/fixmystreet/front.js'), {
+        id = 'script_front',
+        'data-scripts' = version('/js/OpenLayers/OpenLayers.fixmystreet.js') _ ',' _
+            version('/js/map-OpenLayers.js') _ ',' _
+            version('/js/map-OpenStreetMap.js')
+    } ],
+]
+%]

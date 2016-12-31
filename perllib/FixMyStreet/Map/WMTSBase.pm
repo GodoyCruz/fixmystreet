@@ -59,9 +59,7 @@ sub tile_parameters {
 }
 
 # This is used to determine which template to render the map with
-sub map_type {
-    return 'fms';
-}
+sub map_template { 'fms' }
 
 # Reproject a WGS84 lat/lon into an x/y coordinate in this map's CRS.
 # Subclasses will want to override this.
@@ -198,13 +196,13 @@ sub get_map_hash {
     my @scales = $self->scales;
     return {
         %params,
-        type => $self->map_type,
+        type => $self->map_template,
         map_type => 'OpenLayers.Layer.WMTS',
         tiles => $self->map_tiles( %params ),
         copyright => $self->copyright(),
-        zoom => $params{zoom},,
+        zoom => $params{zoom},
         zoomOffset => $self->zoom_parameters->{min_zoom_level},
-        numZoomLevels => $self->zoom_parameters->{default_zoom},
+        numZoomLevels => $self->zoom_parameters->{zoom_levels},
         tile_size => $self->tile_parameters->{size},
         tile_dpi => $self->tile_parameters->{dpi},
         tile_urls => encode_json $self->tile_parameters->{urls},
@@ -241,7 +239,7 @@ sub latlon_to_tile($$$$) {
         lon => $tile_params->{origin_x},
         lat => $tile_params->{origin_y}
     };
-    my $res = $scales[$matrix_id] /
+    my $res = $scales[$zoom] /
         ($tile_params->{inches_per_unit} * $tile_params->{dpi});
         # OpenLayers.INCHES_PER_UNIT[units] * OpenLayers.DOTS_PER_INCH
 
@@ -282,13 +280,12 @@ sub tile_to_latlon {
     my ($self, $fx, $fy, $zoom) = @_;
 
     my $tile_params = $self->tile_parameters;
-    my $matrix_id = $zoom + $self->zoom_parameters->{id_offset};
     my @scales = $self->scales;
     my $tileOrigin = {
         lon => $tile_params->{origin_x},
         lat => $tile_params->{origin_y}
     };
-    my $res = $scales[$matrix_id] /
+    my $res = $scales[$zoom] /
         ($tile_params->{inches_per_unit} * $tile_params->{dpi});
         # OpenLayers.INCHES_PER_UNIT[units] * OpenLayers.DOTS_PER_INCH
 

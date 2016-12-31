@@ -73,7 +73,7 @@ requires 'Moose';
 requires 'MooX::Types::MooseLike';
 requires 'namespace::autoclean';
 requires 'Net::DNS::Resolver';
-requires 'Net::Domain::TLD';
+requires 'Net::Domain::TLD', '1.75';
 requires 'Net::Facebook::Oauth2';
 requires 'Net::OAuth';
 requires 'Net::SMTP::SSL', '1.03';
@@ -98,15 +98,6 @@ requires 'YAML';
 feature 'uk', 'FixMyStreet.com specific requirements' => sub {
     # East Hampshire & Angus
     requires 'SOAP::Lite';
-};
-
-feature 'open311-endpoint', 'Open311::Endpoint specific requirements' => sub {
-    requires 'Web::Simple';
-    requires 'Data::Rx';
-    requires 'MooX::HandlesVia';
-    requires 'Types::Standard';
-    requires 'DateTime::Format::Oracle'; # for EXOR
-    requires 'Convert::NLS_DATE_FORMAT', '0.06'; # Perl 5.22 upgrade
 };
 
 feature 'zurich', 'Zueri wie neu specific requirements' => sub {

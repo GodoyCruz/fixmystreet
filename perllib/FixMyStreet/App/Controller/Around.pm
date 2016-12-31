@@ -38,6 +38,11 @@ sub index : Path : Args(0) {
     # Check if we have a partial report
     my $partial_report = $c->forward('load_partial');
 
+    # Check if the user is searching for a report by ID
+    if ( $c->get_param('pc') && $c->get_param('pc') =~ $c->cobrand->lookup_by_ref_regex ) {
+        $c->go('lookup_by_ref', [ $1 ]);
+    }
+
     # Try to create a location for whatever we have
     my $ret = $c->forward('/location/determine_location_from_coords')
         || $c->forward('/location/determine_location_from_pc');
@@ -47,7 +52,7 @@ sub index : Path : Args(0) {
     }
 
     # Check to see if the spot is covered by a area - if not show an error.
-    return unless $c->forward('check_location_is_acceptable');
+    return unless $c->forward('check_location_is_acceptable', []);
 
     # If we have a partial - redirect to /report/new so that it can be
     # completed.
@@ -171,13 +176,16 @@ sub display_location : Private {
 
     # Check the category to filter by, if any, is valid
     $c->forward('check_and_stash_category');
+    $c->forward( '/reports/stash_report_sort', [ 'created-desc' ]);
 
     # get the map features
     my ( $on_map_all, $on_map, $nearby, $distance ) =
       FixMyStreet::Map::map_features( $c,
         latitude => $latitude, longitude => $longitude,
-        interval => $interval, category => $c->stash->{filter_category},
-        states => $c->stash->{filter_problem_states} );
+        interval => $interval, categories => $c->stash->{filter_category},
+        states => $c->stash->{filter_problem_states},
+        order => $c->stash->{sort_order},
+      );
 
     # copy the found reports to the stash
     $c->stash->{on_map}     = $on_map;
@@ -253,13 +261,11 @@ sub check_and_stash_category : Private {
     )->all;
     my @categories = map { $_->category } @contacts;
     $c->stash->{filter_categories} = \@categories;
-
-
-    my $category = $c->get_param('filter_category');
     my %categories_mapped = map { $_ => 1 } @categories;
-    if ( defined $category && $categories_mapped{$category} ) {
-        $c->stash->{filter_category} = $category;
-    }
+
+    my $categories = [ $c->get_param_list('filter_category', 1) ];
+    my @valid_categories = grep { $_ && $categories_mapped{$_} } @$categories;
+    $c->stash->{filter_category} = \@valid_categories;
 }
 
 =head2 /ajax
@@ -289,17 +295,17 @@ sub ajax : Path('/ajax') {
     my $all_pins = $c->get_param('all_pins') ? 1 : undef;
     my $interval = $all_pins ? undef : $c->cobrand->on_map_default_max_pin_age;
 
-    # Need to be the class that can handle it
-    FixMyStreet::Map::set_map_class( 'OSM' );
-
     $c->forward( '/reports/stash_report_filter_status' );
+    $c->forward( '/reports/stash_report_sort', [ 'created-desc' ]);
 
     # extract the data from the map
     my ( $on_map_all, $on_map_list, $nearby, $dist ) =
       FixMyStreet::Map::map_features($c,
           bbox => $bbox, interval => $interval,
-          category => $c->get_param('filter_category'),
-          states => $c->stash->{filter_problem_states} );
+          categories => [ $c->get_param_list('filter_category', 1) ],
+          states => $c->stash->{filter_problem_states},
+          order => $c->stash->{sort_order},
+      );
 
     # create a list of all the pins
     my @pins = map {
@@ -383,6 +389,24 @@ sub _geocode : Private {
     my $body = encode_json($response);
     $c->res->body($body);
 
+}
+
+sub lookup_by_ref : Private {
+    my ( $self, $c, $ref ) = @_;
+
+    my $problems = $c->cobrand->problems->search([
+        id => $ref,
+        external_id => $ref
+    ]);
+
+    if ( $problems->count == 0) {
+        $c->detach( '/page_error_404_not_found', [] );
+    } elsif ( $problems->count == 1 ) {
+        $c->res->redirect( $c->uri_for( '/report', $problems->first->id ) );
+    } else {
+        $c->stash->{ref} = $ref;
+        $c->stash->{matching_reports} = [ $problems->all ];
+    }
 }
 
 __PACKAGE__->meta->make_immutable;

@@ -2,12 +2,13 @@ $(function(){
     // available for admin pages
 
     // hide the open311_only section and reveal it only when send_method is relevant
-    var $open311_only = $('.admin-open311-only');
+    function hide_or_show_open311(e, hide_fast) {
+        var $form = $(this).closest("form");
+        var $open311_only = $form.find('.admin-open311-only');
 
-    function hide_or_show_open311(hide_fast) {
-        var send_method = $('#send_method').val();
+        var send_method = $(this).val();
         var show_open311 = false;
-        if ($('#endpoint').val()) {
+        if ($form.find('[name=endpoint]').val()) {
             show_open311 = true; // always show the form if there is an endpoint value
         } else if (send_method && !send_method.match(/^(email|noop|refused)$/i)) {
             show_open311 = true;
@@ -23,10 +24,19 @@ $(function(){
         }
     }
 
-    if ($open311_only) {
-        $('#send_method').on('change', hide_or_show_open311);
-        hide_or_show_open311(true);
+    if ($('.admin-open311-only').length) {
+        // Add handler to send_method dropdowns and set initial visibility
+        $('[name=send_method]').on('change', hide_or_show_open311).each(function() {
+            hide_or_show_open311.call(this, null, true);
+        });
     }
+
+    // Some lists of checkboxes have 'select all/none' links at the top
+    $("a[data-select-none], a[data-select-all]").click(function(e) {
+        e.preventDefault();
+        var checked = $(this).filter('[data-select-all]').length > 0;
+        $(this).closest("ul").find('input[type=checkbox]').prop('checked', checked);
+    });
 
 
     // admin hints: maybe better implemented as tooltips?
@@ -72,6 +82,30 @@ $(function(){
       onClose: function( selectedDate ) {
         $( "#start_date" ).datepicker( "option", "maxDate", selectedDate );
       }
+    });
+
+    // On user edit page, hide the area/categories fields if body changes
+    $("form#user_edit select#body").change(function() {
+        var show_area = $(this).val() == $(this).find("[data-originally-selected]").val();
+        $("form#user_edit select#area_id").closest("li").toggle(show_area);
+        $("form#user_edit .js-user-categories").toggle(show_area);
+    });
+
+    // On category edit page, hide the reputation input if inspection isn't required
+    $("form#category_edit #inspection_required").change(function() {
+        var $p = $("form#category_edit #reputation_threshold").closest("p");
+        var $hint = $p.prevUntil().first();
+        if (this.checked) {
+            $p.removeClass("hidden");
+            if ($hint.length) {
+                $hint.removeClass("hidden");
+            }
+        } else {
+            $p.addClass("hidden");
+            if ($hint.length) {
+                $hint.addClass("hidden");
+            }
+        }
     });
 });
 

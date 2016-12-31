@@ -1,5 +1,5 @@
 [%
-    SET bodyclass = 'mappage';
+    DEFAULT bodyclass = 'mappage';
     PROCESS "report/photo-js.html";
     PROCESS "maps/${map.type}.html";
 
@@ -14,6 +14,11 @@
 </div>
 
 <div id="map_sidebar">
+
+[% IF two_column_sidebar %]
+  <div class="two_column_sidebar">
+[% END %]
+
   <div id="side-report">
 
 [% IF login_success %]
@@ -35,16 +40,30 @@
 
 [% INCLUDE 'report/banner.html' %]
 [% INCLUDE 'report/_main.html' %]
+
+[% IF problem.duplicate_of %]
+    [% INCLUDE 'report/duplicate-no-updates.html' hide_header = 1 %]
+[% END %]
+
 [% TRY %][% INCLUDE 'report/_message_manager.html' %][% CATCH file %][% END %]
 [% INCLUDE 'report/display_tools.html' %]
 [% TRY %][% INCLUDE 'report/sharing.html' %][% CATCH file %][% END %]
 [% INCLUDE 'report/updates.html' %]
 
-[% IF NOT shown_form %]
+[% IF problem.duplicate_of %]
+    [% INCLUDE 'report/duplicate-no-updates.html' %]
+[% ELSIF NOT shown_form %]
     [% INCLUDE 'report/update-form.html' %]
 [% END %]
 
   </div>
+
+  [% second_column %]
+
+[% IF two_column_sidebar %]
+  </div>
+[% END %]
+
 </div>
 
 [% INCLUDE 'footer.html' %]

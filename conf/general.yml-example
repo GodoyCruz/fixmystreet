@@ -46,6 +46,9 @@ STAGING_SITE: 1
 # reports to live places. Set this to 1 if you want a dev site to route
 # reports as normal.
 SEND_REPORTS_ON_STAGING: 0
+# Manual testing of multiple cobrands can be made easier by skipping some
+# checks they have in them, if this variable is set
+SKIP_CHECKS_ON_STAGING: 0
 
 # What to use as front page/alert example places placeholder
 # Defaults to High Street, Main Street
@@ -61,6 +64,7 @@ LANGUAGES:
 TIME_ZONE: ""
 
 # File locations for uploaded photos and cached geocoding results.
+# Absolute paths, or relative to the project's root directory
 UPLOAD_DIR: '../upload/'
 GEO_CACHE: '../cache/'
 
@@ -159,8 +163,9 @@ ALLOWED_COBRANDS:
 # the admin interface. Defaults to BASE_URL with "/admin" on the end.
 ADMIN_BASE_URL: ''
 
-# How many items are returned in the GeoRSS feeds by default
+# How many items are returned in the GeoRSS and Open311 feeds by default
 RSS_LIMIT: '20'
+OPEN311_LIMIT: 1000
 # How many reports to show per page on the All Reports pages
 ALL_REPORTS_PER_PAGE: 100
 

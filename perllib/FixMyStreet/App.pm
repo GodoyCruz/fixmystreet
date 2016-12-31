@@ -6,7 +6,6 @@ use Catalyst::Runtime 5.80;
 use FixMyStreet;
 use FixMyStreet::Cobrand;
 use Memcached;
-use mySociety::Random qw(random_bytes);
 use FixMyStreet::Map;
 use FixMyStreet::Email;
 use Utils;
@@ -97,9 +96,6 @@ after 'prepare_headers' => sub {
         && @$ssl_header == 2 && $self->req->header($ssl_header->[0]) eq $ssl_header->[1];
 };
 
-# set up DB handle for old code
-FixMyStreet->configure_mysociety_dbhandle;
-
 # disable debug logging unless in debug mode
 __PACKAGE__->log->disable('debug')    #
   unless __PACKAGE__->debug;
@@ -163,6 +159,8 @@ sub setup_request {
     $c->setup_dev_overrides();
 
     my $cobrand = $c->cobrand;
+
+    $cobrand->add_response_headers if $cobrand->can('add_response_headers');
 
     # append the cobrand templates to the include path
     $c->stash->{additional_template_paths} = $cobrand->path_to_web_templates;
@@ -338,7 +336,8 @@ sub send_email {
     $data->{_html_images_} = \@inline_images if @inline_images;
 
     my $email = mySociety::Locale::in_gb_locale { FixMyStreet::Email::construct_email($data) };
-    $c->model('EmailSend')->send($email);
+    my $return = $c->model('EmailSend')->send($email);
+    $c->log->error("$return") if !$return;
 
     return $email;
 }
@@ -347,13 +346,21 @@ sub send_email {
 
     $uri = $c->uri_with( ... );
 
-Simply forwards on to $c->req->uri_with - this is a common typo I make!
+Forwards on to $c->req->uri_with, but also deletes keys that have a "" value
+(as undefined is passed as that from a template).
 
 =cut
 
 sub uri_with {
     my $c = shift;
-    return $c->req->uri_with(@_);
+    my $uri = $c->req->uri_with(@_);
+    my $args = $_[0];
+    my %params = %{$uri->query_form_hash};
+    foreach my $key (keys %$args) {
+        delete $params{$key} if $args->{$key} eq "";
+    }
+    $uri->query_form(\%params);
+    return $uri;
 }
 
 =head2 uri_for
@@ -416,8 +423,7 @@ call), use this method.
 
 sub render_fragment {
     my ($c, $template, $vars) = @_;
-    $vars->{additional_template_paths} = $c->cobrand->path_to_web_templates
-        if $vars;
+    $vars = { %{$c->stash}, %$vars } if $vars;
     $c->view('Web')->render($c, $template, $vars);
 }
 
@@ -449,11 +455,13 @@ a list, with an empty list if no parameter is present.
 =cut
 
 sub get_param_list {
-    my ($c, $param) = @_;
+    my ($c, $param, $allow_commas) = @_;
+    die unless wantarray;
     my $value = $c->req->params->{$param};
-    return @$value if ref $value;
-    return ($value) if defined $value;
-    return ();
+    return () unless defined $value;
+    my @value = ref $value ? @$value : ($value);
+    return map { split /,/, $_ } @value if $allow_commas;
+    return @value;
 }
 
 =head2 set_param

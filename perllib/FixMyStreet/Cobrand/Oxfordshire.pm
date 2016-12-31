@@ -10,6 +10,13 @@ sub council_name { return 'Oxfordshire County Council'; }
 sub council_url { return 'oxfordshire'; }
 sub is_two_tier { return 1; }
 
+sub is_council_with_case_management {
+    # XXX Change this to return 1 when OCC FMSfC goes live.
+    return FixMyStreet->config('STAGING_SITE');
+}
+
+sub map_type { 'OSM' }
+
 sub base_url {
     my $self = shift;
     return $self->next::method() if FixMyStreet->config('STAGING_SITE');
@@ -93,7 +100,7 @@ sub problem_response_days {
 }
 
 sub reports_ordering {
-    return { -desc => 'confirmed' };
+    return 'created-desc';
 }
 
 sub pin_colour {
@@ -111,5 +118,7 @@ sub contact_email {
     my $self = shift;
     return join( '@', 'highway.enquiries', 'oxfordshire.gov.uk' );
 }
+
+sub admin_user_domain { 'oxfordshire.gov.uk' }
 
 1;

@@ -23,6 +23,7 @@ sub send(;$) {
 
     # Set up site, language etc.
     my ($verbose, $nomail, $debug_mode) = CronFns::options();
+    my $test_data;
 
     my $base_url = FixMyStreet->config('BASE_URL');
     my $site = $site_override || CronFns::site($base_url);
@@ -142,6 +143,24 @@ sub send(;$) {
             }
             $reporters{ $sender } ||= $sender->new();
 
+            my $inspection_required = $sender_info->{contact}->get_extra_metadata('inspection_required') if $sender_info->{contact};
+            if ( $inspection_required ) {
+                my $reputation_threshold = $sender_info->{contact}->get_extra_metadata('reputation_threshold') || 0;
+                my $reputation_threshold_met = 0;
+                if ( $reputation_threshold > 0 ) {
+                    my $user_reputation = $row->user->get_extra_metadata('reputation') || 0;
+                    $reputation_threshold_met = $user_reputation >= $reputation_threshold;
+                }
+                unless (
+                        $row->get_extra_metadata('inspected') ||
+                        $row->user->has_permission_to( trusted => $row->bodies_str_ids ) ||
+                        $reputation_threshold_met
+                ) {
+                    $skip = 1;
+                    debug_print("skipped because not yet inspected", $row->id) if $debug_mode;
+                }
+            }
+
             if ( $reporters{ $sender }->should_skip( $row ) ) {
                 $skip = 1;
                 debug_print("skipped by sender " . $sender_info->{method} . " (might be due to previous failed attempts?)", $row->id) if $debug_mode;
@@ -205,18 +224,18 @@ sub send(;$) {
 
         for my $sender ( keys %reporters ) {
             debug_print("sending using " . $sender, $row->id) if $debug_mode;
-            $result *= $reporters{ $sender }->send( $row, \%h );
-            if ( $reporters{ $sender }->unconfirmed_counts) {
-                foreach my $e (keys %{ $reporters{ $sender }->unconfirmed_counts } ) {
-                    foreach my $c (keys %{ $reporters{ $sender }->unconfirmed_counts->{$e} }) {
-                        $notgot{$e}{$c} += $reporters{ $sender }->unconfirmed_counts->{$e}{$c};
+            $sender = $reporters{$sender};
+            $result *= $sender->send( $row, \%h );
+            if ( $sender->unconfirmed_counts) {
+                foreach my $e (keys %{ $sender->unconfirmed_counts } ) {
+                    foreach my $c (keys %{ $sender->unconfirmed_counts->{$e} }) {
+                        $notgot{$e}{$c} += $sender->unconfirmed_counts->{$e}{$c};
                     }
                 }
-                %note = (
-                    %note,
-                    %{ $reporters{ $sender }->unconfirmed_notes }
-                );
+                %note = (%note, %{ $sender->unconfirmed_notes });
             }
+            $test_data->{test_req_used} = $sender->open311_test_req_used
+                if FixMyStreet->test_mode && $sender->can('open311_test_req_used');
         }
 
         unless ($result) {
@@ -272,6 +291,8 @@ sub send(;$) {
             print "The following reports had problems sending:\n$sending_errors";
         }
     }
+
+    return $test_data;
 }
 
 sub _send_report_sent_email {

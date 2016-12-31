@@ -749,6 +749,31 @@ subtest 'check reports from abuser not sent' => sub {
     ok $abuse->delete(), 'user removed from abuse table';
 };
 
+subtest 'check response templates' => sub {
+    my $c1 = $mech->create_contact_ok(category => 'Potholes', body_id => $body_ids{2651}, email => 'p');
+    my $c2 = $mech->create_contact_ok(category => 'Graffiti', body_id => $body_ids{2651}, email => 'g');
+    my $t1 = FixMyStreet::DB->resultset('ResponseTemplate')->create({ body_id => $body_ids{2651}, title => "Title 1", text => "Text 1" });
+    my $t2 = FixMyStreet::DB->resultset('ResponseTemplate')->create({ body_id => $body_ids{2651}, title => "Title 2", text => "Text 2" });
+    my $t3 = FixMyStreet::DB->resultset('ResponseTemplate')->create({ body_id => $body_ids{2651}, title => "Title 3", text => "Text 3" });
+    $t1->add_to_contacts($c1);
+    $t2->add_to_contacts($c2);
+    my ($problem) = $mech->create_problems_for_body(1, $body_ids{2651}, 'TITLE');
+    is $problem->response_templates, 1, 'Only the global template returned';
+    ($problem) = $mech->create_problems_for_body(1, $body_ids{2651}, 'TITLE', { category => 'Potholes' });
+    is $problem->response_templates, 2, 'Global and pothole templates returned';
+};
+
+subtest 'check duplicate reports' => sub {
+    my ($problem1, $problem2) = $mech->create_problems_for_body(2, $body_ids{2651}, 'TITLE');
+    $problem1->set_extra_metadata(duplicate_of => $problem2->id);
+    $problem1->state('duplicate');
+    $problem1->update;
+
+    is $problem1->duplicate_of->title, $problem2->title, 'problem1 returns correct problem from duplicate_of';
+    is scalar @{ $problem2->duplicates }, 1, 'problem2 has correct number of duplicates';
+    is $problem2->duplicates->[0]->title, $problem1->title, 'problem2 includes problem1 in duplicates';
+};
+
 END {
     $problem->comments->delete if $problem;
     $problem->delete if $problem;

@@ -28,8 +28,7 @@ data to change.
 
 The original data of the report is stored in moderation_original_data, so
 that it can be reverted/consulted if required.  All moderation events are
-stored in moderation_log.  (NB: In future, this could be combined with
-admin_log).
+stored in admin_log.
 
 =head1 SEE ALSO
 
@@ -55,7 +54,7 @@ sub report : Chained('moderate') : PathPart('report') : CaptureArgs(1) {
 
     # ... and immediately, if the user isn't authorized
     $c->detach unless $c->user_exists;
-    $c->detach unless $c->user->has_permission_to(moderate => $problem->bodies_str);
+    $c->detach unless $c->user->has_permission_to(moderate => $problem->bodies_str_ids);
 
     $c->forward('/auth/check_csrf_token');
 
@@ -102,18 +101,15 @@ sub report_moderate_audit : Private {
         reason => (sprintf '%s (%s)', $reason, $types_csv),
     });
 
-    my $cobrand = FixMyStreet::Cobrand->get_class_for_moniker($problem->cobrand)->new();
-
     my $token = $c->model("DB::Token")->create({
         scope => 'moderation',
         data => { id => $problem->id }
     });
 
     $c->send_email( 'problem-moderated.txt', {
-
-        to      => [ [ $user->email, $user->name ] ],
+        to => [ [ $problem->user->email, $problem->name ] ],
         types => $types_csv,
-        user => $user,
+        user => $problem->user,
         problem => $problem,
         report_uri => $c->stash->{report_uri},
         report_complain_uri => $c->stash->{cobrand_base} . '/contact?m=' . $token->token,

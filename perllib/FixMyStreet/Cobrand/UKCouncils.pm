@@ -42,12 +42,48 @@ sub restriction {
 
 sub problems_restriction {
     my ($self, $rs) = @_;
+    return $rs if FixMyStreet->config('STAGING_SITE') && FixMyStreet->config('SKIP_CHECKS_ON_STAGING');
     return $rs->to_body($self->council_id);
 }
 
 sub updates_restriction {
     my ($self, $rs) = @_;
+    return $rs if FixMyStreet->config('STAGING_SITE') && FixMyStreet->config('SKIP_CHECKS_ON_STAGING');
     return $rs->to_body($self->council_id);
+}
+
+sub users_restriction {
+    my ($self, $rs) = @_;
+
+    # Council admins can only see users who are members of the same council,
+    # have an email address in a specified domain, or users who have sent a
+    # report or update to that council.
+
+    my $problem_user_ids = $self->problems->search(
+        undef,
+        {
+            columns => [ 'user_id' ],
+            distinct => 1
+        }
+    )->as_query;
+    my $update_user_ids = $self->updates->search(
+        undef,
+        {
+            columns => [ 'user_id' ],
+            distinct => 1
+        }
+    )->as_query;
+
+    my $or_query = [
+        from_body => $self->council_id,
+        id => [ { -in => $problem_user_ids }, { -in => $update_user_ids } ],
+    ];
+    if ($self->can('admin_user_domain')) {
+        my $domain = $self->admin_user_domain;
+        push @$or_query, email => { ilike => "%\@$domain" };
+    }
+
+    return $rs->search($or_query);
 }
 
 sub base_url {
@@ -68,6 +104,8 @@ sub enter_postcode_text {
 
 sub area_check {
     my ( $self, $params, $context ) = @_;
+
+    return 1 if FixMyStreet->config('STAGING_SITE') && FixMyStreet->config('SKIP_CHECKS_ON_STAGING');
 
     my $councils = $params->{all_areas};
     my $council_match = defined $councils->{$self->council_id};
@@ -155,6 +193,16 @@ sub admin_allow_user {
     return 1 if $user->is_superuser;
     return undef unless defined $user->from_body;
     return $user->from_body->id == $self->council_id;
+}
+
+sub available_permissions {
+    my $self = shift;
+
+    my $perms = $self->next::method();
+    $perms->{Problems}->{contribute_as_body} = "Create reports/updates as " . $self->council_name;
+    $perms->{Users}->{user_assign_areas} = "Assign users to areas in " . $self->council_name;
+
+    return $perms;
 }
 
 1;

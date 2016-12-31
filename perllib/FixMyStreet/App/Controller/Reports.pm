@@ -55,7 +55,9 @@ sub index : Path : Args(0) {
     }
 
     # Fetch all bodies
-    my @bodies = $c->model('DB::Body')->search({}, {
+    my @bodies = $c->model('DB::Body')->search({
+        deleted => 0,
+    }, {
         '+select' => [ { count => 'area_id' } ],
         '+as' => [ 'area_count' ],
         join => 'body_areas',
@@ -74,13 +76,12 @@ sub index : Path : Args(0) {
         $c->stash->{open} = $j->{open};
     };
     if ($@) {
-        $c->stash->{message} = _("There was a problem showing the All Reports page. Please try again later.");
+        my $message = _("There was a problem showing the All Reports page. Please try again later.");
         if ($c->config->{STAGING_SITE}) {
-            $c->stash->{message} .= '</p><p>Perhaps the bin/update-all-reports script needs running. Use: bin/update-all-reports</p><p>'
+            $message .= '</p><p>Perhaps the bin/update-all-reports script needs running. Use: bin/update-all-reports</p><p>'
                 . sprintf(_('The error was: %s'), $@);
         }
-        $c->stash->{template} = 'errors/generic.html';
-        return;
+        $c->detach('/page_error_500_internal_error', [ $message ]);
     }
 
     # Down here so that error pages aren't cached.
@@ -114,6 +115,10 @@ sub ward : Path : Args(2) {
     $c->forward( 'stash_report_filter_status' );
     $c->forward( 'load_and_group_problems' );
 
+    if ($c->get_param('ajax')) {
+        $c->detach('ajax', [ 'reports/_problem-list.html' ]);
+    }
+
     my $body_short = $c->cobrand->short_name( $c->stash->{body} );
     $c->stash->{rss_url} = '/rss/reports/' . $body_short;
     $c->stash->{rss_url} .= '/' . $c->cobrand->short_name( $c->stash->{ward} )
@@ -130,7 +135,7 @@ sub ward : Path : Args(2) {
     } )->all;
     @categories = map { $_->category } @categories;
     $c->stash->{filter_categories} = \@categories;
-    $c->stash->{filter_category} = $c->get_param('filter_category');
+    $c->stash->{filter_category} = [ $c->get_param_list('filter_category', 1) ];
 
     my $pins = $c->stash->{pins};
 
@@ -359,10 +364,12 @@ sub check_canonical_url : Private {
 sub load_and_group_problems : Private {
     my ( $self, $c ) = @_;
 
+    $c->forward('stash_report_sort', [ $c->cobrand->reports_ordering ]);
+
     my $page = $c->get_param('p') || 1;
     # NB: If 't' is specified, it will override 'status'.
     my $type = $c->get_param('t') || 'all';
-    my $category = $c->get_param('c') || $c->get_param('filter_category') || '';
+    my $category = [ $c->get_param_list('filter_category', 1) ];
 
     my $states = $c->stash->{filter_problem_states};
     my $where = {
@@ -389,7 +396,7 @@ sub load_and_group_problems : Private {
         $where->{state} = $not_open;
     }
 
-    if ($category) {
+    if (@$category) {
         $where->{category} = $category;
     }
 
@@ -405,10 +412,10 @@ sub load_and_group_problems : Private {
     $problems = $problems->search(
         $where,
         {
-            order_by => $c->cobrand->reports_ordering,
+            order_by => $c->stash->{sort_order},
             rows => $c->cobrand->reports_per_page,
         }
-    )->page( $page );
+    )->include_comment_counts->page( $page );
     $c->stash->{pager} = $problems->pager;
 
     my ( %problems, @pins );
@@ -462,23 +469,58 @@ sub redirect_body : Private {
 sub stash_report_filter_status : Private {
     my ( $self, $c ) = @_;
 
-    my $status = $c->get_param('status') || $c->cobrand->on_map_default_status;
-    if ( $status eq 'all' ) {
-        $c->stash->{filter_status} = 'all';
-        $c->stash->{filter_problem_states} = FixMyStreet::DB::Result::Problem->visible_states();
-    } elsif ( $status eq 'open' ) {
-        $c->stash->{filter_status} = 'open';
-        $c->stash->{filter_problem_states} = FixMyStreet::DB::Result::Problem->open_states();
-    } elsif ( $status eq 'closed' ) {
-        $c->stash->{filter_status} = 'closed';
-        $c->stash->{filter_problem_states} = FixMyStreet::DB::Result::Problem->closed_states();
-    } elsif ( $status eq 'fixed' ) {
-        $c->stash->{filter_status} = 'fixed';
-        $c->stash->{filter_problem_states} = FixMyStreet::DB::Result::Problem->fixed_states();
-    } else {
-        $c->stash->{filter_status} = $c->cobrand->on_map_default_status;
+    my @status = $c->get_param_list('status', 1);
+    @status = ($c->cobrand->on_map_default_status) unless @status;
+    my %status = map { $_ => 1 } @status;
+
+    my %filter_problem_states;
+    my %filter_status;
+
+    if ($status{open}) {
+        my $s = FixMyStreet::DB::Result::Problem->open_states();
+        %filter_problem_states = (%filter_problem_states, %$s);
+        $filter_status{open} = 1;
+    }
+    if ($status{closed}) {
+        my $s = FixMyStreet::DB::Result::Problem->closed_states();
+        %filter_problem_states = (%filter_problem_states, %$s);
+        $filter_status{closed} = 1;
+    }
+    if ($status{fixed}) {
+        my $s = FixMyStreet::DB::Result::Problem->fixed_states();
+        %filter_problem_states = (%filter_problem_states, %$s);
+        $filter_status{fixed} = 1;
     }
 
+    if ($status{all}) {
+        my $s = FixMyStreet::DB::Result::Problem->visible_states();
+        # %filter_status = ();
+        %filter_problem_states = %$s;
+    }
+
+    $c->stash->{filter_problem_states} = \%filter_problem_states;
+    $c->stash->{filter_status} = \%filter_status;
+    return 1;
+}
+
+sub stash_report_sort : Private {
+    my ( $self, $c, $default ) = @_;
+
+    my %types = (
+        updated => 'lastupdate',
+        created => 'confirmed',
+        comments => 'comment_count',
+    );
+
+    my $sort = $c->get_param('sort') || $default;
+    $sort = $default unless $sort =~ /^((updated|created)-(desc|asc)|comments-desc)$/;
+    $sort =~ /^(updated|created|comments)-(desc|asc)$/;
+    my $order_by = $types{$1} || $1;
+    my $dir = $2;
+    $order_by = { -desc => $order_by } if $dir eq 'desc';
+
+    $c->stash->{sort_key} = $sort;
+    $c->stash->{sort_order} = $order_by;
     return 1;
 }
 
@@ -486,6 +528,33 @@ sub add_row {
     my ( $c, $problem, $body, $problems, $pins ) = @_;
     push @{$problems->{$body}}, $problem;
     push @$pins, $problem->pin_data($c, 'reports');
+}
+
+sub ajax : Private {
+    my ($self, $c, $template) = @_;
+
+    $c->res->content_type('application/json; charset=utf-8');
+    $c->res->header( 'Cache_Control' => 'max-age=0' );
+
+    my @pins = map {
+        my $p = $_;
+        [ $p->{latitude}, $p->{longitude}, $p->{colour}, $p->{id}, $p->{title} ]
+    } @{$c->stash->{pins}};
+
+    my $list_html = $c->render_fragment($template);
+
+    my $pagination = $c->render_fragment('pagination.html', {
+        pager => $c->stash->{problems_pager} || $c->stash->{pager},
+        param => 'p',
+    });
+
+    my $json = {
+        pins => \@pins,
+        pagination => $pagination,
+    };
+    $json->{reports_list} = $list_html if $list_html;
+    my $body = encode_json($json);
+    $c->res->body($body);
 }
 
 =head1 AUTHOR

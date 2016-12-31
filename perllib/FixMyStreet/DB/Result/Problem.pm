@@ -20,36 +20,14 @@ __PACKAGE__->add_columns(
   },
   "postcode",
   { data_type => "text", is_nullable => 0 },
-  "latitude",
-  { data_type => "double precision", is_nullable => 0 },
-  "longitude",
-  { data_type => "double precision", is_nullable => 0 },
-  "bodies_str",
-  { data_type => "text", is_nullable => 1 },
-  "areas",
-  { data_type => "text", is_nullable => 0 },
-  "category",
-  { data_type => "text", default_value => "Other", is_nullable => 0 },
   "title",
   { data_type => "text", is_nullable => 0 },
   "detail",
   { data_type => "text", is_nullable => 0 },
   "photo",
   { data_type => "bytea", is_nullable => 1 },
-  "used_map",
-  { data_type => "boolean", is_nullable => 0 },
-  "user_id",
-  { data_type => "integer", is_foreign_key => 1, is_nullable => 0 },
   "name",
   { data_type => "text", is_nullable => 0 },
-  "anonymous",
-  { data_type => "boolean", is_nullable => 0 },
-  "external_id",
-  { data_type => "text", is_nullable => 1 },
-  "external_body",
-  { data_type => "text", is_nullable => 1 },
-  "external_team",
-  { data_type => "text", is_nullable => 1 },
   "created",
   {
     data_type     => "timestamp",
@@ -57,18 +35,22 @@ __PACKAGE__->add_columns(
     is_nullable   => 0,
     original      => { default_value => \"now()" },
   },
-  "confirmed",
-  { data_type => "timestamp", is_nullable => 1 },
   "state",
   { data_type => "text", is_nullable => 0 },
-  "lang",
-  { data_type => "text", default_value => "en-gb", is_nullable => 0 },
-  "service",
-  { data_type => "text", default_value => "", is_nullable => 0 },
-  "cobrand",
-  { data_type => "text", default_value => "", is_nullable => 0 },
-  "cobrand_data",
-  { data_type => "text", default_value => "", is_nullable => 0 },
+  "whensent",
+  { data_type => "timestamp", is_nullable => 1 },
+  "used_map",
+  { data_type => "boolean", is_nullable => 0 },
+  "bodies_str",
+  { data_type => "text", is_nullable => 1 },
+  "anonymous",
+  { data_type => "boolean", is_nullable => 0 },
+  "category",
+  { data_type => "text", default_value => "Other", is_nullable => 0 },
+  "confirmed",
+  { data_type => "timestamp", is_nullable => 1 },
+  "send_questionnaire",
+  { data_type => "boolean", default_value => \"true", is_nullable => 0 },
   "lastupdate",
   {
     data_type     => "timestamp",
@@ -76,14 +58,32 @@ __PACKAGE__->add_columns(
     is_nullable   => 0,
     original      => { default_value => \"now()" },
   },
-  "whensent",
-  { data_type => "timestamp", is_nullable => 1 },
-  "send_questionnaire",
-  { data_type => "boolean", default_value => \"true", is_nullable => 0 },
-  "extra",
+  "areas",
+  { data_type => "text", is_nullable => 0 },
+  "service",
+  { data_type => "text", default_value => "", is_nullable => 0 },
+  "lang",
+  { data_type => "text", default_value => "en-gb", is_nullable => 0 },
+  "cobrand",
+  { data_type => "text", default_value => "", is_nullable => 0 },
+  "cobrand_data",
+  { data_type => "text", default_value => "", is_nullable => 0 },
+  "latitude",
+  { data_type => "double precision", is_nullable => 0 },
+  "longitude",
+  { data_type => "double precision", is_nullable => 0 },
+  "external_id",
   { data_type => "text", is_nullable => 1 },
+  "external_body",
+  { data_type => "text", is_nullable => 1 },
+  "external_team",
+  { data_type => "text", is_nullable => 1 },
+  "user_id",
+  { data_type => "integer", is_foreign_key => 1, is_nullable => 0 },
   "flagged",
   { data_type => "boolean", default_value => \"false", is_nullable => 0 },
+  "extra",
+  { data_type => "text", is_nullable => 1 },
   "geocode",
   { data_type => "bytea", is_nullable => 1 },
   "send_fail_count",
@@ -106,6 +106,8 @@ __PACKAGE__->add_columns(
   { data_type => "text", is_nullable => 1 },
   "bodies_missing",
   { data_type => "text", is_nullable => 1 },
+  "response_priority_id",
+  { data_type => "integer", is_foreign_key => 1, is_nullable => 1 },
 );
 __PACKAGE__->set_primary_key("id");
 __PACKAGE__->has_many(
@@ -127,15 +129,32 @@ __PACKAGE__->has_many(
   { cascade_copy => 0, cascade_delete => 0 },
 );
 __PACKAGE__->belongs_to(
+  "response_priority",
+  "FixMyStreet::DB::Result::ResponsePriority",
+  { id => "response_priority_id" },
+  {
+    is_deferrable => 0,
+    join_type     => "LEFT",
+    on_delete     => "NO ACTION",
+    on_update     => "NO ACTION",
+  },
+);
+__PACKAGE__->belongs_to(
   "user",
   "FixMyStreet::DB::Result::User",
   { id => "user_id" },
   { is_deferrable => 0, on_delete => "NO ACTION", on_update => "NO ACTION" },
 );
+__PACKAGE__->has_many(
+  "user_planned_reports",
+  "FixMyStreet::DB::Result::UserPlannedReport",
+  { "foreign.report_id" => "self.id" },
+  { cascade_copy => 0, cascade_delete => 0 },
+);
 
 
-# Created by DBIx::Class::Schema::Loader v0.07035 @ 2015-08-13 16:33:38
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:Go+T9oFRfwQ1Ag89qPpF/g
+# Created by DBIx::Class::Schema::Loader v0.07035 @ 2016-09-07 11:01:40
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:iH9c4VZZN/ONnhN6g89DFw
 
 # Add fake relationship to stored procedure table
 __PACKAGE__->has_one(
@@ -162,6 +181,7 @@ use namespace::clean -except => [ 'meta' ];
 use Utils;
 use FixMyStreet::Map::FMS;
 use LWP::Simple qw($ua);
+use RABX;
 
 my $IM = eval {
     require Image::Magick;
@@ -456,7 +476,7 @@ sub confirm {
 
 sub bodies_str_ids {
     my $self = shift;
-    return unless $self->bodies_str;
+    return [] unless $self->bodies_str;
     my @bodies = split( /,/, $self->bodies_str );
     return \@bodies;
 }
@@ -639,15 +659,29 @@ order of title.
 =cut
 
 sub response_templates {
-    my $problem = shift;
-    return $problem->result_source->schema->resultset('ResponseTemplate')->search(
+    my $self = shift;
+    return $self->result_source->schema->resultset('ResponseTemplate')->search(
         {
-            body_id => $problem->bodies_str_ids
+            'me.body_id' => $self->bodies_str_ids,
+            'contact.category' => [ $self->category, undef ],
         },
         {
-            order_by => 'title'
+            order_by => 'title',
+            join => { 'contact_response_templates' => 'contact' },
         }
     );
+}
+
+=head2 response_priorities
+
+Returns all ResponsePriorities attached to this problem's category/contact, in
+alphabetical order of name.
+
+=cut
+
+sub response_priorities {
+    my $self = shift;
+    return $self->result_source->schema->resultset('ResponsePriority')->for_bodies($self->bodies_str_ids, $self->category);
 }
 
 # returns true if the external id is the council's ref, i.e., useful to publish it
@@ -672,6 +706,13 @@ sub duration_string {
     } else {
         $body = $problem->body( $c );
     }
+    if ( $c->cobrand->can('get_body_handler_for_problem') ) {
+        my $handler = $c->cobrand->get_body_handler_for_problem( $problem );
+        if ( $handler->can('is_council_with_case_management') && $handler->is_council_with_case_management ) {
+            return sprintf(_('Received by %s moments later'), $body);
+        }
+    }
+    return unless $problem->whensent;
     return sprintf(_('Sent to %s %s later'), $body,
         Utils::prettify_duration($problem->whensent->epoch - $problem->confirmed->epoch, 'minute')
     );
@@ -814,7 +855,7 @@ Return most recent ModerationLog object
 
 sub latest_moderation_log_entry {
     my $self = shift;
-    return $self->admin_log_entries->search({ action => 'moderation' }, { order_by => 'id desc' })->first;
+    return $self->admin_log_entries->search({ action => 'moderation' }, { order_by => { -desc => 'id' } })->first;
 }
 
 sub photos {
@@ -892,6 +933,7 @@ sub pin_data {
         id => $self->id,
         title => $opts{private} ? $self->title : $self->title_safe,
         problem => $self,
+        type => $opts{type},
     }
 };
 
@@ -924,16 +966,27 @@ sub static_map {
         if ($tile_url =~ m{^//}) {
             $tile_url = "https:$tile_url";
         }
-        my $tile = LWP::Simple::get($tile_url);
+        my $tile;
+        if (FixMyStreet->test_mode) {
+            $tile = FixMyStreet->path_to('t/app/controller/sample.jpg')->slurp(iomode => '<:raw');
+        } else {
+            $tile = LWP::Simple::get($tile_url);
+        }
+        next unless $tile;
         my $im = Image::Magick->new;
         $im->BlobToImage($tile);
+        my $gravity = ($i<2?'North':'South') . ($i%2?'East':'West');
         if (!$image) {
             $image = $im;
-            $image->Extent(geometry => '512x512', gravity => 'NorthWest');
+            $image->Extent(geometry => '512x512', gravity => $gravity);
         } else {
-            my $gravity = ($i<2?'North':'South') . ($i%2?'East':'West');
             $image->Composite(image => $im, gravity => $gravity);
         }
+    }
+
+    unless ($image) {
+        FixMyStreet::Map::set_map_class($orig_map_class) if $orig_map_class;
+        return;
     }
 
     # The only pin might be the report pin, with added x/y
@@ -961,5 +1014,38 @@ sub static_map {
         content_type => 'image/jpeg',
     };
 }
+
+has shortlisted_user => (
+    is => 'ro',
+    lazy => 1,
+    default => sub {
+        my $self = shift;
+        my $user = $self->user_planned_reports->active->first;
+        return $user->user if $user;
+    },
+);
+
+has duplicate_of => (
+    is => 'ro',
+    lazy => 1,
+    default => sub {
+        my $self = shift;
+        return unless $self->state eq 'duplicate';
+        my $duplicate_of = int($self->get_extra_metadata("duplicate_of") || 0);
+        return unless $duplicate_of;
+        return $self->result_source->schema->resultset('Problem')->search({ id => $duplicate_of })->first;
+    },
+);
+
+has duplicates => (
+    is => 'ro',
+    lazy => 1,
+    default => sub {
+        my $self = shift;
+        my $rabx_id = RABX::serialise( $self->id );
+        my @duplicates = $self->result_source->schema->resultset('Problem')->search({ extra => { like => "\%duplicate_of,$rabx_id%" } })->all;
+        return \@duplicates;
+    },
+);
 
 1;

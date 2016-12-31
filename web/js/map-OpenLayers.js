@@ -90,7 +90,8 @@ var fixmystreet = fixmystreet || {};
                 size: pin[5] || marker_size,
                 faded: 0,
                 id: pin[3],
-                title: pin[4] || ''
+                title: pin[4] || '',
+                draggable: pin[6] === false ? false : true
             });
             markers.push( marker );
         }
@@ -136,12 +137,72 @@ var fixmystreet = fixmystreet || {};
         } else {
             return 'small';
         }
+      },
+
+      // Handle a single report pin being moved by dragging it on the map.
+      // pin_moved_callback is called with a new EPSG:4326 OpenLayers.LonLat if
+      // the user drags the pin and confirms its new location.
+      admin_drag: function(pin_moved_callback, confirm_change) {
+          confirm_change = confirm_change || false;
+          var original_lonlat;
+          var drag = new OpenLayers.Control.DragFeatureFMS( fixmystreet.markers, {
+              onStart: function(feature, e) {
+                  // Keep track of where the feature started, so we can put it
+                  // back if the user cancels the operation.
+                  original_lonlat = new OpenLayers.LonLat(feature.geometry.x, feature.geometry.y);
+              },
+              onComplete: function(feature, e) {
+                  var lonlat = feature.geometry.clone();
+                  lonlat.transform(
+                      fixmystreet.map.getProjectionObject(),
+                      new OpenLayers.Projection("EPSG:4326")
+                  );
+                  if ((confirm_change && window.confirm(translation_strings.correct_position)) || !confirm_change) {
+                      // Let the callback know about the newly confirmed position
+                      pin_moved_callback(lonlat);
+                  } else {
+                      // Put it back
+                      fixmystreet.markers.features[0].move(original_lonlat);
+                  }
+              }
+          } );
+          fixmystreet.map.addControl( drag );
+          drag.activate();
+      },
+
+      // `markers.redraw()` in markers_highlight will trigger an
+      // `overFeature` event if the mouse cursor is still over the same
+      // marker on the map, which would then run markers_highlight
+      // again, causing an infinite flicker while the cursor remains over
+      // the same marker. We really only want to redraw the markers when
+      // the cursor moves from one marker to another (ie: when there is an
+      // overFeature followed by an outFeature followed by an overFeature).
+      // Therefore, we keep track of the previous event in
+      // fixmystreet.latest_map_hover_event and only call markers_highlight
+      // if we know the previous event was different to the current one.
+      // (See the `overFeature` and `outFeature` callbacks inside of
+      // fixmystreet.select_feature).
+
+      markers_highlight: function(problem_id) {
+          for (var i = 0; i < fixmystreet.markers.features.length; i++) {
+              if (typeof problem_id == 'undefined') {
+                  // There is no highlighted marker, so unfade this marker
+                  fixmystreet.markers.features[i].attributes.faded = 0;
+              } else if (problem_id == fixmystreet.markers.features[i].attributes.id) {
+                  // This is the highlighted marker, unfade it
+                  fixmystreet.markers.features[i].attributes.faded = 0;
+              } else {
+                  // This is not the hightlighted marker, fade it
+                  fixmystreet.markers.features[i].attributes.faded = 1;
+              }
+          }
+          fixmystreet.markers.redraw();
       }
     };
 
     var drag = {
         activate: function() {
-            this._drag = new OpenLayers.Control.DragFeature( fixmystreet.markers, {
+            this._drag = new OpenLayers.Control.DragFeatureFMS( fixmystreet.markers, {
                 onComplete: function(feature, e) {
                     fixmystreet.update_pin( feature.geometry );
                 }
@@ -164,35 +225,6 @@ var fixmystreet = fixmystreet || {};
         fixmystreet.map.setCenter(center, z);
     }
 
-    // `markers.redraw()` in markers_highlight will trigger an
-    // `overFeature` event if the mouse cursor is still over the same
-    // marker on the map, which would then run markers_highlight
-    // again, causing an infinite flicker while the cursor remains over
-    // the same marker. We really only want to redraw the markers when
-    // the cursor moves from one marker to another (ie: when there is an
-    // overFeature followed by an outFeature followed by an overFeature).
-    // Therefore, we keep track of the previous event in
-    // fixmystreet.latest_map_hover_event and only call markers_highlight
-    // if we know the previous event was different to the current one.
-    // (See the `overFeature` and `outFeature` callbacks inside of
-    // fixmystreet.select_feature).
-
-    function markers_highlight(problem_id) {
-        for (var i = 0; i < fixmystreet.markers.features.length; i++) {
-            if (typeof problem_id == 'undefined') {
-                // There is no highlighted marker, so unfade this marker
-                fixmystreet.markers.features[i].attributes.faded = 0;
-            } else if (problem_id == fixmystreet.markers.features[i].attributes.id) {
-                // This is the highlighted marker, unfade it
-                fixmystreet.markers.features[i].attributes.faded = 0;
-            } else {
-                // This is not the hightlighted marker, fade it
-                fixmystreet.markers.features[i].attributes.faded = 1;
-            }
-        }
-        fixmystreet.markers.redraw();
-    }
-
     function sidebar_highlight(problem_id) {
         if (typeof problem_id !== 'undefined') {
             var $a = $('.item-list--reports a[href$="/' + problem_id + '"]');
@@ -210,7 +242,7 @@ var fixmystreet = fixmystreet || {};
 
         // All of this, just so that ctrl/cmd-click on a pin works?!
         var event;
-        if (window.MouseEvent) {
+        if (typeof window.MouseEvent === 'function') {
             event = new MouseEvent('click', evt);
             $a[0].dispatchEvent(event);
         } else if (document.createEvent) {
@@ -225,8 +257,8 @@ var fixmystreet = fixmystreet || {};
             event = document.createEventObject();
             event.metaKey = evt.metaKey;
             event.ctrlKey = evt.ctrlKey;
-            if (e.metaKey === undefined) {
-                e.metaKey = e.ctrlKey;
+            if (event.metaKey === undefined) {
+                event.metaKey = event.ctrlKey;
             }
             $a[0].fireEvent("onclick", event);
         } else {
@@ -239,10 +271,94 @@ var fixmystreet = fixmystreet || {};
         fixmystreet.markers.refresh({force: true});
     }
 
+    function parse_query_string() {
+        var qs = {};
+        if (!location.search) {
+            return qs;
+        }
+        location.search.substring(1).split('&').forEach(function(i) {
+            var s = i.split('='),
+                k = s[0],
+                v = s[1] && decodeURIComponent(s[1].replace(/\+/g, ' '));
+            qs[k] = v;
+        });
+        return qs;
+    }
+
+    function replace_query_parameter(qs, id, key) {
+        var value = $('#' + id).val();
+        if (value) {
+            qs[key] = (typeof value === 'string') ? value : value.join(',');
+        } else {
+            delete qs[key];
+        }
+        return value;
+    }
+
+    function categories_or_status_changed_history() {
+        if (!('pushState' in history)) {
+            return;
+        }
+        var qs = parse_query_string();
+        var filter_categories = replace_query_parameter(qs, 'filter_categories', 'filter_category');
+        var filter_statuses = replace_query_parameter(qs, 'statuses', 'status');
+        var sort_key = replace_query_parameter(qs, 'sort', 'sort');
+        delete qs['p'];
+        var new_url;
+        if ($.isEmptyObject(qs)) {
+            new_url = location.href.replace(location.search, "");
+        } else if (location.search) {
+            new_url = location.href.replace(location.search, '?' + $.param(qs));
+        } else {
+            new_url = location.href + '?' + $.param(qs);
+        }
+        history.pushState({
+            filter_change: { 'filter_categories': filter_categories, 'statuses': filter_statuses, 'sort': sort_key }
+        }, null, new_url);
+    }
+
+    function setup_inspector_marker_drag() {
+        // On the 'inspect report' page the pin is draggable, so we need to
+        // update the easting/northing fields when it's dragged.
+        if (!$('form#report_inspect_form').length) {
+            // Not actually on the inspect report page
+            return;
+        }
+        fixmystreet.maps.admin_drag(function(lonlat) {
+            var bng = lonlat.clone().transform(
+                new OpenLayers.Projection("EPSG:4326"),
+                new OpenLayers.Projection("EPSG:27700") // TODO: Handle other projections
+            );
+            $("#problem_northing").text(bng.y.toFixed(1));
+            $("#problem_easting").text(bng.x.toFixed(1));
+            $("form#report_inspect_form input[name=latitude]").val(lonlat.y);
+            $("form#report_inspect_form input[name=longitude]").val(lonlat.x);
+        },
+        false);
+    }
+
     function onload() {
         if ( fixmystreet.area.length ) {
+            var extent = new OpenLayers.Bounds();
+            var lr = new OpenLayers.Geometry.LinearRing([
+                new OpenLayers.Geometry.Point(20E6,20E6),
+                new OpenLayers.Geometry.Point(10E6,20E6),
+                new OpenLayers.Geometry.Point(0,20E6),
+                new OpenLayers.Geometry.Point(-10E6,20E6),
+                new OpenLayers.Geometry.Point(-20E6,20E6),
+                new OpenLayers.Geometry.Point(-20E6,0),
+                new OpenLayers.Geometry.Point(-20E6,-20E6),
+                new OpenLayers.Geometry.Point(-10E6,-20E6),
+                new OpenLayers.Geometry.Point(0,-20E6),
+                new OpenLayers.Geometry.Point(10E6,-20E6),
+                new OpenLayers.Geometry.Point(20E6,-20E6),
+                new OpenLayers.Geometry.Point(20E6,0)
+            ]);
+            var loaded = 0;
+            var new_geometry = new OpenLayers.Geometry.Polygon(lr);
             for (var i=0; i<fixmystreet.area.length; i++) {
                 var area = new OpenLayers.Layer.Vector("KML", {
+                    renderers: ['SVGBig', 'VML', 'Canvas'],
                     strategies: [ new OpenLayers.Strategy.Fixed() ],
                     protocol: new OpenLayers.Protocol.HTTP({
                         url: "/mapit/area/" + fixmystreet.area[i] + ".kml?simplify_tolerance=0.0001",
@@ -250,14 +366,34 @@ var fixmystreet = fixmystreet || {};
                     })
                 });
                 fixmystreet.map.addLayer(area);
-                if ( fixmystreet.area.length == 1 ) {
-                    area.events.register('loadend', null, function(a,b,c) {
-                        if ( fixmystreet.area_format ) {
-                            area.styleMap.styles['default'].defaultStyle = fixmystreet.area_format;
-                        }
-                        zoomToBounds( area.getDataExtent() );
-                    });
-                }
+                area.events.register('loadend', area, function(a,b,c) {
+                    loaded++;
+                    var style = this.styleMap.styles['default'];
+                    if ( fixmystreet.area_format ) {
+                        style.defaultStyle = fixmystreet.area_format;
+                    } else {
+                        $.extend(style.defaultStyle, { fillColor: 'black', strokeColor: 'black' });
+                    }
+                    var geometry = this.features[0].geometry;
+                    if (geometry.CLASS_NAME == 'OpenLayers.Geometry.Collection') {
+                        $.each(geometry.components, function(i, polygon) {
+                            new_geometry.addComponents(polygon.components)
+                            extent.extend(polygon.getBounds());
+                        });
+                    } else if (geometry.CLASS_NAME == 'OpenLayers.Geometry.Polygon') {
+                        new_geometry.addComponents(geometry.components);
+                        extent.extend(this.getDataExtent());
+                    }
+                    if (loaded == fixmystreet.area.length) {
+                        var f = this.features[0].clone();
+                        f.geometry = new_geometry;
+                        this.removeAllFeatures();
+                        this.addFeatures([f]);
+                        zoomToBounds(extent);
+                    } else {
+                        fixmystreet.map.removeLayer(this);
+                    }
+                });
             }
         }
 
@@ -340,6 +476,13 @@ var fixmystreet = fixmystreet || {};
                 format: new OpenLayers.Format.FixMyStreet()
             });
         }
+        if (fixmystreet.page == 'reports' || fixmystreet.page == 'my') {
+            pin_layer_options.strategies = [ new OpenLayers.Strategy.FixMyStreetFixed() ];
+            pin_layer_options.protocol = new OpenLayers.Protocol.FixMyStreet({
+                url: fixmystreet.original.href.split('?')[0] + '?ajax=1',
+                format: new OpenLayers.Format.FixMyStreet()
+            });
+        }
         fixmystreet.markers = new OpenLayers.Layer.Vector("Pins", pin_layer_options);
         fixmystreet.markers.events.register( 'loadend', fixmystreet.markers, function(evt) {
             if (fixmystreet.map.popups.length) {
@@ -363,7 +506,7 @@ var fixmystreet = fixmystreet || {};
                     overFeature: function (feature) {
                         if (fixmystreet.latest_map_hover_event != 'overFeature') {
                             document.getElementById('map').style.cursor = 'pointer';
-                            markers_highlight(feature.attributes.id);
+                            fixmystreet.maps.markers_highlight(feature.attributes.id);
                             sidebar_highlight(feature.attributes.id);
                             fixmystreet.latest_map_hover_event = 'overFeature';
                         }
@@ -371,7 +514,7 @@ var fixmystreet = fixmystreet || {};
                     outFeature: function (feature) {
                         if (fixmystreet.latest_map_hover_event != 'outFeature') {
                             document.getElementById('map').style.cursor = '';
-                            markers_highlight();
+                            fixmystreet.maps.markers_highlight();
                             sidebar_highlight();
                             fixmystreet.latest_map_hover_event = 'outFeature';
                         }
@@ -382,19 +525,21 @@ var fixmystreet = fixmystreet || {};
             fixmystreet.select_feature.activate();
             fixmystreet.map.events.register( 'zoomend', null, fixmystreet.maps.markers_resize );
 
-            // If the category filter dropdown exists on the page set up the
-            // event handlers to populate it and react to it changing
-            if ($("select#filter_categories").length) {
-                $("body").on("change", "#filter_categories", categories_or_status_changed);
-            }
-            // Do the same for the status dropdown
-            if ($("select#statuses").length) {
-                $("body").on("change", "#statuses", categories_or_status_changed);
-            }
+            // Set up the event handlers to populate the filters and react to them changing
+            $("#filter_categories").on("change.filters", categories_or_status_changed);
+            $("#statuses").on("change.filters", categories_or_status_changed);
+            $("#sort").on("change.filters", categories_or_status_changed);
+            $("#filter_categories").on("change.user", categories_or_status_changed_history);
+            $("#statuses").on("change.user", categories_or_status_changed_history);
+            $("#sort").on("change.user", categories_or_status_changed_history);
         } else if (fixmystreet.page == 'new') {
             drag.activate();
         }
         fixmystreet.map.addLayer(fixmystreet.markers);
+
+        if (fixmystreet.page == "report") {
+            setup_inspector_marker_drag();
+        }
 
         if ( fixmystreet.zoomToBounds ) {
             zoomToBounds( fixmystreet.markers.getDataExtent() );
@@ -462,6 +607,7 @@ var fixmystreet = fixmystreet || {};
         // Create the basics of the map
         fixmystreet.map = new OpenLayers.Map(
             "map", OpenLayers.Util.extend({
+                theme: null,
                 controls: fixmystreet.controls,
                 displayProjection: new OpenLayers.Projection("EPSG:4326")
             }, fixmystreet.map_options)
@@ -508,16 +654,6 @@ var fixmystreet = fixmystreet || {};
             click.activate();
         }
 
-        // Hide the pin filter submit button. Not needed because we'll use JS
-        // to refresh the map when the filter inputs are changed.
-        $(".report-list-filters [type=submit]").hide();
-
-        if (fixmystreet.page == "my" || fixmystreet.page == "reports") {
-            $(".report-list-filters select").change(function() {
-                $(this).closest("form").submit();
-            });
-        }
-
         // Vector layers must be added onload as IE sucks
         if ($.browser.msie) {
             $(window).load(onload);
@@ -531,9 +667,9 @@ var fixmystreet = fixmystreet || {};
                 var href = $('a', this).attr('href');
                 var id = parseInt(href.replace(/^.*[/]([0-9]+)$/, '$1'));
                 clearTimeout(timeout);
-                markers_highlight(id);
+                fixmystreet.maps.markers_highlight(id);
             }).on('mouseleave', '.item-list--reports__item', function(){
-                timeout = setTimeout(markers_highlight, 50);
+                timeout = setTimeout(fixmystreet.maps.markers_highlight, 50);
             });
         })();
     });
@@ -546,38 +682,24 @@ var fixmystreet = fixmystreet || {};
    zoomTo(0) rather than zoomToMaxExtent()
 */
 OpenLayers.Control.PanZoomFMS = OpenLayers.Class(OpenLayers.Control.PanZoom, {
-    onButtonClick: function (evt) {
-        var btn = evt.buttonElement;
-        switch (btn.action) {
-            case "panup":
-                this.map.pan(0, -this.getSlideFactor("h"));
-                break;
-            case "pandown":
-                this.map.pan(0, this.getSlideFactor("h"));
-                break;
-            case "panleft":
-                this.map.pan(-this.getSlideFactor("w"), 0);
-                break;
-            case "panright":
-                this.map.pan(this.getSlideFactor("w"), 0);
-                break;
-            case "zoomin":
-            case "zoomout":
-            case "zoomworld":
-                var size = this.map.getSize(),
-                    xy = { x: size.w / 2, y: size.h / 2 };
-                switch (btn.action) {
-                    case "zoomin":
-                        this.map.zoomTo(this.map.getZoom() + 1, xy);
-                        break;
-                    case "zoomout":
-                        this.map.zoomTo(this.map.getZoom() - 1, xy);
-                        break;
-                    case "zoomworld":
-                        this.map.zoomTo(0, xy);
-                        break;
-                }
+    _addButton: function(id1, id2) {
+        var btn = document.createElement('div'),
+            id = id1 + id2;
+        btn.innerHTML = id1 + ' ' + id2;
+        btn.id = this.id + "_" + id;
+        btn.action = id;
+        btn.className = "olButton";
+        this.div.appendChild(btn);
+        if (OpenLayers.VERSION_NUMBER.indexOf('2.11') > -1) {
+            btn.map = this.map;
+            OpenLayers.Event.observe(btn, "mousedown", OpenLayers.Function.bindAsEventListener(this.buttonDown, btn));
+            var slideFactorPixels = this.slideFactor;
+            btn.getSlideFactor = function() {
+                return slideFactorPixels;
+            };
         }
+        this.buttons.push(btn);
+        return btn;
     },
     moveTo: function(){},
     draw: function(px) {
@@ -586,13 +708,12 @@ OpenLayers.Control.PanZoomFMS = OpenLayers.Class(OpenLayers.Control.PanZoom, {
         // size and position them all using CSS.
         OpenLayers.Control.prototype.draw.apply(this, arguments);
         this.buttons = [];
-        this._addButton("panup", "north-mini.png");
-        this._addButton("panleft", "west-mini.png");
-        this._addButton("panright", "east-mini.png");
-        this._addButton("pandown", "south-mini.png");
-        this._addButton("zoomin", "zoom-plus-mini.png");
-        this._addButton("zoomworld", "zoom-world-mini.png");
-        this._addButton("zoomout", "zoom-minus-mini.png");
+        this._addButton("pan", "up");
+        this._addButton("pan", "left");
+        this._addButton("pan", "right");
+        this._addButton("pan", "down");
+        this._addButton("zoom", "in");
+        this._addButton("zoom", "out");
         return this.div;
     }
 });
@@ -658,6 +779,20 @@ OpenLayers.Strategy.FixMyStreet = OpenLayers.Class(OpenLayers.Strategy.BBOX, {
     }
 });
 
+/* Copy of Strategy.Fixed, but with no initial load */
+OpenLayers.Strategy.FixMyStreetFixed = OpenLayers.Class(OpenLayers.Strategy.Fixed, {
+    activate: function() {
+        var activated = OpenLayers.Strategy.prototype.activate.apply(this, arguments);
+        if (activated) {
+            this.layer.events.on({
+                "refresh": this.load,
+                scope: this
+            });
+        }
+        return activated;
+    }
+});
+
 /* Pan data request handler */
 // This class is used to get a JSON object from /ajax that contains
 // pins for the map and HTML for the sidebar. It does a fetch whenever the map
@@ -666,17 +801,14 @@ OpenLayers.Strategy.FixMyStreet = OpenLayers.Class(OpenLayers.Strategy.BBOX, {
 // params to /ajax if the user has filtered the map.
 OpenLayers.Protocol.FixMyStreet = OpenLayers.Class(OpenLayers.Protocol.HTTP, {
     read: function(options) {
-        // Pass the values of the category and status fields as query params
-        var filter_category = $("#filter_categories").val();
-        if (filter_category !== undefined) {
-            options.params = options.params || {};
-            options.params.filter_category = filter_category;
-        }
-        var status = $("#statuses").val();
-        if (status !== undefined) {
-            options.params = options.params || {};
-            options.params.status = status;
-        }
+        // Pass the values of the category, status, and sort fields as query params
+        $.each({ filter_category: 'filter_categories', status: 'statuses', sort: 'sort' }, function(key, id) {
+            var val = $('#' + id).val();
+            if (val !== undefined) {
+                options.params = options.params || {};
+                options.params[key] = val;
+            }
+        });
         return OpenLayers.Protocol.HTTP.prototype.read.apply(this, [options]);
     },
     CLASS_NAME: "OpenLayers.Protocol.FixMyStreet"
@@ -704,6 +836,13 @@ OpenLayers.Format.FixMyStreet = OpenLayers.Class(OpenLayers.Format.JSON, {
         var current;
         if (typeof(obj.current) != 'undefined' && (current = document.getElementById('current'))) {
             current.innerHTML = obj.current;
+        }
+        var reports_list;
+        if (typeof(obj.reports_list) != 'undefined' && (reports_list = document.getElementById('js-reports-list'))) {
+            reports_list.innerHTML = obj.reports_list;
+        }
+        if (typeof(obj.pagination) != 'undefined') {
+            $('.js-pagination').html(obj.pagination);
         }
         return fixmystreet.maps.markers_list( obj.pins, false );
     },
@@ -744,9 +883,27 @@ OpenLayers.Control.Click = OpenLayers.Class(OpenLayers.Control, {
         var lonlat = fixmystreet.map.getLonLatFromViewPortPx(e.xy);
         fixmystreet.display.begin_report(lonlat);
 
-        if ( typeof ga !== 'undefined' && window.cobrand == 'fixmystreet' ) {
+        if ( typeof ga !== 'undefined' && fixmystreet.cobrand == 'fixmystreet' ) {
             ga('send', 'pageview', { 'page': '/map_click' } );
         }
     }
 });
 
+/* Drag handler that allows individual features to disable dragging */
+OpenLayers.Control.DragFeatureFMS = OpenLayers.Class(OpenLayers.Control.DragFeature, {
+    CLASS_NAME: "OpenLayers.Control.DragFeatureFMS",
+
+    overFeature: function(feature) {
+        if (feature.attributes.draggable) {
+            return OpenLayers.Control.DragFeature.prototype.overFeature.call(this, feature);
+        } else {
+            return false;
+        }
+    }
+})
+
+OpenLayers.Renderer.SVGBig = OpenLayers.Class(OpenLayers.Renderer.SVG, {
+    MAX_PIXEL: 15E7,
+    CLASS_NAME: "OpenLayers.Renderer.SVGBig"
+
+});

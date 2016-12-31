@@ -102,8 +102,9 @@ sub get_export_rows_count {
 
 my $EXISTING_REPORT_COUNT = 0;
 
+my $superuser;
 subtest "set up superuser" => sub {
-    my $superuser = $mech->log_in_ok( 'super@example.org' );
+    $superuser = $mech->log_in_ok( 'super@example.org' );
     # a user from body $zurich is a superuser, as $zurich has no parent id!
     $superuser->update({ from_body => $zurich->id }); 
     $EXISTING_REPORT_COUNT = get_export_rows_count($mech);
@@ -115,6 +116,7 @@ my @reports = $mech->create_problems_for_body( 1, $division->id, 'Test', {
     confirmed          => undef,
     cobrand            => 'zurich',
     photo         => $sample_photo,
+    areas => ',423017,',
 });
 my $report = $reports[0];
 
@@ -137,8 +139,8 @@ FixMyStreet::override_config {
     my $user = $mech->log_in_ok( 'dm1@example.org') ;
     $user->from_body( undef );
     $user->update;
-    $mech->get_ok( '/admin' );
-    is $mech->uri->path, '/my', "got sent to /my";
+    ok $mech->get( '/admin' );
+    is $mech->res->code, 403, 'Got 403';
     $user->from_body( $division->id );
     $user->update;
 
@@ -360,9 +362,9 @@ subtest 'SDM' => sub {
     FixMyStreet::override_config {
         ALLOWED_COBRANDS => [ 'zurich' ],
     }, sub {
-        $mech->get_ok( '/admin' );
+        ok $mech->get( '/admin' );
     };
-    is $mech->uri->path, '/my', "got sent to /my";
+    is $mech->res->code, 403, 'Got 403';
     $user->from_body( $subdivision->id );
     $user->update;
 
@@ -482,6 +484,7 @@ $mech->clear_emails_ok;
     confirmed          => undef,
     cobrand            => 'zurich',
     photo         => $sample_photo,
+    areas => ',423017,',
 });
 $report = $reports[0];
 
@@ -523,6 +526,7 @@ $mech->email_count_is(0);
     confirmed          => undef,
     cobrand            => 'zurich',
     photo         => $sample_photo,
+    areas => ',423017,',
 });
 $report = $reports[0];
 
@@ -933,8 +937,8 @@ subtest 'Status update shown as appropriate' => sub {
             my ($state, $update, $public, $user_response) = @$_;
             $report->update({ state => $state });
             $mech->get_ok( '/admin/report_edit/' . $report->id );
-            contains_or_lacks($mech, $update, "<textarea name='status_update'");
-            contains_or_lacks($mech, $public || $user_response, '<div class="admin-official-answer">');
+            $mech->contains_or_lacks($update, "name='status_update'");
+            $mech->contains_or_lacks($public || $user_response, '<div class="admin-official-answer">');
 
             if ($public) {
                 $mech->get_ok( '/report/' . $report->id );
@@ -943,17 +947,6 @@ subtest 'Status update shown as appropriate' => sub {
        }
     };
 };
-
-# TODO refactor into FixMyStreet::TestMech;
-sub contains_or_lacks {
-    my ($mech, $contains, $text) = @_;
-    if ($contains) {
-        $mech->content_contains($text);
-    }
-    else {
-        $mech->content_lacks($text);
-    }
-}
 
 subtest 'time_spent' => sub {
     FixMyStreet::override_config {
@@ -975,6 +968,18 @@ subtest 'time_spent' => sub {
 };
 
 $mech->log_out_ok;
+
+FixMyStreet::override_config {
+    ALLOWED_COBRANDS => [ 'zurich' ],
+    MAPIT_URL => 'http://mapit.zurich/',
+    MAPIT_TYPES  => [ 'ZZZ' ],
+}, sub {
+    LWP::Protocol::PSGI->register(t::Mock::MapItZurich->run_if_script, host => 'mapit.zurich');
+    subtest 'users at the top level can be edited' => sub {
+        $mech->log_in_ok( $superuser->email );
+        $mech->get_ok('/admin/user_edit/' . $superuser->id );
+    };
+};
 
 END {
     $mech->delete_body($subdivision);

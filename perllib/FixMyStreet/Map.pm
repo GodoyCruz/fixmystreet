@@ -74,7 +74,7 @@ sub map_features {
         @p{"min_lon", "min_lat", "max_lon", "max_lat"} = split /,/, $p{bbox};
     }
 
-    if ($p{latitude} && $p{longitude}) {
+    if (defined $p{latitude} && defined $p{longitude}) {
         # TODO - be smarter about calculating the surrounding square
         # use deltas that are roughly 500m in the UK - so we get a 1 sq km search box
         my $lat_delta = 0.00438;
@@ -91,10 +91,9 @@ sub map_features {
     # list of problems around map can be limited, but should show all pins
     my $around_limit = $c->cobrand->on_map_list_limit || undef;
 
-    my @around_args = @p{"min_lat", "max_lat", "min_lon", "max_lon", "interval"};
-    my $on_map_all = $c->cobrand->problems_on_map->around_map( @around_args, undef, $p{category}, $p{states} );
+    my $on_map_all = $c->cobrand->problems_on_map->around_map( undef, %p );
     my $on_map_list = $around_limit
-        ? $c->cobrand->problems_on_map->around_map( @around_args, $around_limit, $p{category}, $p{states} )
+        ? $c->cobrand->problems_on_map->around_map( $around_limit, %p )
         : $on_map_all;
 
     my $dist = FixMyStreet::Gaze::get_radius_containing_population( $p{latitude}, $p{longitude} );
@@ -102,7 +101,7 @@ sub map_features {
     my $limit  = 20;
     my @ids    = map { $_->id } @$on_map_list;
     my $nearby = $c->model('DB::Nearby')->nearby(
-        $c, $dist, \@ids, $limit, @p{"latitude", "longitude", "interval", "category", "states"}
+        $c, $dist, \@ids, $limit, @p{"latitude", "longitude", "interval", "categories", "states"}
     );
 
     return ( $on_map_all, $on_map_list, $nearby, $dist );

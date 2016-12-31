@@ -14,8 +14,9 @@
                         </p>
                       [% END %]
                         <ul class="nav-menu nav-menu--main mob-only">
-                            <li><[% IF c.req.uri.path == '/' %]a onclick="$('html, body').animate({scrollTop:0}, 500); return false;" href="#site-header"[% ELSE %]a href="/"[% END %]
-                            >[% loc("Report a problem") %]</[% c.req.uri.path == '/' ? 'a' : 'a' %]></li>[%
+                            <li><[% IF c.req.uri.path == '/' %]span[% ELSE %]a href="/"[% END %]
+                            class="report-a-problem-btn"
+                            >[% loc("Report a problem") %]</[% c.req.uri.path == '/' ? 'span' : 'a' %]></li>[%
                             %]<li><[% IF c.req.uri.path == '/reports' %]span[% ELSE %]a href="/reports"[% END
                             %]>[% loc("All reports") %]</[% c.req.uri.path == '/reports' ? 'span' : 'a' %]></li>[%
                             %]<li><[% IF c.req.uri.path == '/faq' %]span[% ELSE %]a href="/faq"[% END
@@ -25,8 +26,6 @@
                 </div>
             </div>
         </div>
-
-<!-- [% INCLUDE 'debug_footer.html' %] -->
     </div> <!-- .wrapper -->
 
     <div id="zurich-footer-wrapper" class="desk-only">
@@ -36,6 +35,11 @@
         <span class="hidden">|</span> <a href="http://www.stadt-zuerich.ch/content/portal/de/index/footer/impressum.html">Impressum</a>
     </div>
     </div>
+
+    <script src="[% version('/cobrands/zurich/validation_rules.js') %]"></script>
+    [% INCLUDE 'common_footer_tags.html' %]
+    <script src="//ajax.googleapis.com/ajax/libs/jqueryui/1.9.2/jquery-ui.min.js" charset="utf-8"></script>
+    <script src="[% version('/cobrands/zurich/js.js') %]"></script>
 
 </body>
 </html>

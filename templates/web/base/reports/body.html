@@ -17,6 +17,7 @@
 [% END %]
 
 [%
+    PROCESS "report/photo-js.html";
     PROCESS "maps/${map.type}.html";
     SET bodyclass = 'mappage';
     INCLUDE 'header.html',
@@ -52,18 +53,17 @@
 
 [% INCLUDE 'reports/_ward-list.html' %]
 
-[% IF c.cobrand.moniker == 'fixmystreet' %]
-<p class="promo">
-    FixMyStreet is now available for local council websites.
-    <a href="https://www.fixmystreet.com/council">Find&nbsp;out&nbsp;more</a>.
-</p>
-[% END %]
-
 <section class="full-width">
 [% INCLUDE "reports/_list-filters.html", use_form_wrapper = 1 %]
+<div class="js-pagination">
 [% INCLUDE 'pagination.html', param = 'p' %]
-[% INCLUDE 'reports/_problem-list.html' %]
+</div>
+<div id="js-reports-list">
+    [% INCLUDE 'reports/_problem-list.html' %]
+</div>
+<div class="js-pagination">
 [% INCLUDE 'pagination.html', param = 'p' %]
+</div>
 </section>
 
     </div>
